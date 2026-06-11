@@ -1,0 +1,64 @@
+// Shared constants & plain types used across state, audio and UI.
+
+export const PPQ = 96                 // ticks per quarter note
+export const BAR = PPQ * 4            // 4/4 fixed
+export const STEP16 = PPQ / 4         // a 16th note in ticks
+
+// A note inside a clip. p = MIDI pitch (or drum pad index 0-7 on drum tracks),
+// s = start in ticks, d = duration in ticks, v = velocity 0..1, pr = probability 0..1
+export type Note = { p: number; s: number; d: number; v: number; pr: number }
+
+export type ClipRef =
+  | { kind: 'session'; trackId: string; sceneId: string }
+  | { kind: 'arr'; id: string }
+
+export type TrackKind = 'synth' | 'drum'
+
+export const CLIP_COLORS = [
+  '#e74c3c', '#e67e22', '#f1c40f', '#a3cb38', '#2ecc71', '#1abc9c',
+  '#3498db', '#5e72e4', '#9b59b6', '#e84393', '#fd79a8', '#95a5a6',
+]
+
+export const USER_COLORS = [
+  '#ff5d5d', '#ffb02e', '#ffe14d', '#7bed8d', '#39d0d8', '#5e9bff',
+  '#a06bff', '#ff6bd6', '#8aff80', '#ff9d6b',
+]
+
+export const DRUM_PADS = ['Kick', 'Snare', 'Clap', 'Cl Hat', 'Op Hat', 'Lo Tom', 'Perc', 'Crash']
+export const NUM_PADS = DRUM_PADS.length
+
+export const GRID_OPTIONS: { label: string; ticks: number }[] = [
+  { label: '1/4', ticks: PPQ },
+  { label: '1/8', ticks: PPQ / 2 },
+  { label: '1/8T', ticks: PPQ / 3 },
+  { label: '1/16', ticks: PPQ / 4 },
+  { label: '1/16T', ticks: PPQ / 6 },
+  { label: '1/32', ticks: PPQ / 8 },
+]
+
+export const LAUNCH_Q_OPTIONS = [
+  { label: 'None', bars: 0 },
+  { label: '1 Bar', bars: 1 },
+  { label: '2 Bars', bars: 2 },
+  { label: '4 Bars', bars: 4 },
+]
+
+export const ADJECTIVES = ['Funky', 'Cosmic', 'Mellow', 'Neon', 'Dusty', 'Velvet', 'Turbo', 'Lazy', 'Golden', 'Wavy', 'Hyper', 'Silky']
+export const ANIMALS = ['Walrus', 'Fox', 'Panda', 'Otter', 'Falcon', 'Gecko', 'Yak', 'Moth', 'Tiger', 'Heron', 'Llama', 'Newt']
+
+export function randomName() {
+  const a = ADJECTIVES[Math.floor(Math.random() * ADJECTIVES.length)]
+  const b = ANIMALS[Math.floor(Math.random() * ANIMALS.length)]
+  return `${a} ${b}`
+}
+
+export function clamp(v: number, lo: number, hi: number) {
+  return Math.min(hi, Math.max(lo, v))
+}
+
+export function ticksToBBS(ticks: number) {
+  const bar = Math.floor(ticks / BAR) + 1
+  const beat = Math.floor((ticks % BAR) / PPQ) + 1
+  const six = Math.floor((ticks % PPQ) / STEP16) + 1
+  return `${bar}.${beat}.${six}`
+}

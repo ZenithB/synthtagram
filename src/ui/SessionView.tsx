@@ -1,0 +1,303 @@
+// The Session View: tracks as columns, scenes as rows, launchable clips with
+// quantized triggering — Ableton's signature surface.
+
+import React, { useState, useSyncExternalStore } from 'react'
+import * as Y from 'yjs'
+import { CLIP_COLORS } from '../types'
+import {
+  tracks, scenes, clips, clipKey, createClip, deleteClipAt, duplicateClipTo,
+  removeTrack, renameTrack, setTrackColor, duplicateTrack, moveTrack, setTrackMix,
+  addScene, removeScene, renameScene, duplicateScene, sendClipToArr, sendSceneToArr,
+  setMetaField, meta, setClipField, trackById, moveArrClip,
+} from '../state/doc'
+import { engine } from '../audio/engine'
+import { setUI, ui, useUI, toast } from '../state/store'
+import { useY, useRaf } from './hooks'
+import { Fader, MeterBar, Knob, openMenu, ColorRow, MenuItem } from './widgets'
+import { peersList, subscribeAwareness, awarenessVersion, setPresence } from '../state/net'
+import {
+  selectClip, selectTrack, copyClipRef, pasteClipTo, hasClipboard,
+  addSynthTrack, addDrumTrack, duplicateClipToNextScene, loadLoop,
+} from './actions'
+import { MIDI_LOOPS, INST_PRESETS, DRUM_KITS } from '../packs'
+import { applyPreset, applyDrumKit } from './actions'
+
+const PAN_SPEC = { key: 'pan', label: 'Pan', min: -1, max: 1, def: 0, fmt: (v: number) => (Math.abs(v) < 0.02 ? 'C' : v < 0 ? `${Math.round(-v * 50)}L` : `${Math.round(v * 50)}R`) }
+
+function useEngineTick() {
+  return useSyncExternalStore(engine.subscribe, () => engine.version)
+}
+function usePresence() {
+  return useSyncExternalStore(subscribeAwareness, awarenessVersion)
+}
+
+// progress strip on a playing clip (rAF, no react re-render)
+function ClipProgress({ trackId }: { trackId: string }) {
+  const ref = React.useRef<HTMLDivElement>(null)
+  useRaf(() => {
+    const p = engine.clipProgress(trackId)
+    if (ref.current) ref.current.style.width = p === null ? '0%' : `${p * 100}%`
+  })
+  return <div className="clip-progress"><div ref={ref} /></div>
+}
+
+function InlineRename({ value, onDone }: { value: string; onDone: (v: string | null) => void }) {
+  const [v, setV] = useState(value)
+  return (
+    <input
+      className="inline-rename" autoFocus value={v}
+      onChange={e => setV(e.target.value)}
+      onBlur={() => onDone(v.trim() || null)}
+      onKeyDown={e => {
+        if (e.key === 'Enter') onDone(v.trim() || null)
+        if (e.key === 'Escape') onDone(null)
+        e.stopPropagation()
+      }}
+      onPointerDown={e => e.stopPropagation()}
+    />
+  )
+}
+
+function ClipSlot({ track, sceneId }: { track: Y.Map<any>; sceneId: string }) {
+  useEngineTick()
+  usePresence()
+  const trackId = track.get('id') as string
+  const key = clipKey(trackId, sceneId)
+  const cm = clips.get(key) as Y.Map<any> | undefined
+  const st = engine.clipState(trackId, sceneId)
+  const isSel = useUI(s => !!(s.selClip && s.selClip.kind === 'session' && s.selClip.trackId === trackId && s.selClip.sceneId === sceneId))
+  const [renaming, setRenaming] = useState(false)
+
+  const remoteEditors = peersList().filter(p => !p.me && p.state.sel?.clipKey === key)
+
+  const open = () => {
+    if (!cm) createClip(trackId, sceneId)
+    selectClip({ kind: 'session', trackId, sceneId }, true)
+  }
+
+  const onDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    const clipSrc = e.dataTransfer.getData('stg/clip')
+    const loopName = e.dataTransfer.getData('stg/loop')
+    if (clipSrc && clipSrc !== key) {
+      const [srcT, srcS] = clipSrc.split('|')
+      duplicateClipTo({ kind: 'session', trackId: srcT, sceneId: srcS }, trackId, sceneId)
+      if (!e.altKey) deleteClipAt(srcT, srcS)
+      selectClip({ kind: 'session', trackId, sceneId })
+    } else if (loopName) {
+      const loop = MIDI_LOOPS.find(l => l.name === loopName)
+      if (loop) loadLoop(loop, trackId, sceneId)
+    }
+  }
+
+  if (!cm) {
+    return (
+      <div
+        className="slot empty"
+        data-info="Double-click: create a clip. Drag loops from the browser here."
+        onDoubleClick={open}
+        onClick={() => selectTrack(trackId)}
+        onDragOver={e => e.preventDefault()}
+        onDrop={onDrop}
+        onContextMenu={e => openMenu(e, [
+          { label: 'Create clip', fn: open },
+          { label: 'Paste clip', fn: () => pasteClipTo(trackId, sceneId), disabled: !hasClipboard() },
+        ])}
+      >
+        {engine.clipState(trackId, sceneId).playing ? null : <span className="slot-stop-ghost">◻</span>}
+      </div>
+    )
+  }
+
+  const color = CLIP_COLORS[cm.get('color') ?? 0]
+  const name = cm.get('name') ?? 'Clip'
+  const menuItems: MenuItem[] = [
+    { label: '▶ Launch', fn: () => engine.launchClip(trackId, sceneId) },
+    { label: '◻ Stop track', fn: () => engine.stopClip(trackId) },
+    { label: '✏ Edit notes', fn: open },
+    'sep',
+    { label: 'Rename', fn: () => setRenaming(true) },
+    { custom: <ColorRow colors={CLIP_COLORS} onPick={i => setClipField({ kind: 'session', trackId, sceneId }, 'color', i)} /> },
+    { label: 'Duplicate ↓ next scene', fn: () => duplicateClipToNextScene({ kind: 'session', trackId, sceneId }) },
+    { label: 'Copy', fn: () => copyClipRef({ kind: 'session', trackId, sceneId }) },
+    { label: 'Paste here', fn: () => pasteClipTo(trackId, sceneId), disabled: !hasClipboard() },
+    'sep',
+    { label: '→ Send to Arrangement @ playhead', fn: () => { sendClipToArr(trackId, sceneId, Math.round(engine.arrSeekTicks)); toast('Sent to arrangement') } },
+    { label: 'Delete', fn: () => deleteClipAt(trackId, sceneId), danger: true },
+  ]
+
+  return (
+    <div
+      className={`slot filled ${isSel ? 'selected' : ''} ${st.playing ? 'playing' : ''} ${st.queued ? 'queued' : ''}`}
+      style={{ borderLeftColor: color, background: `color-mix(in srgb, ${color} ${st.playing ? 30 : 16}%, var(--bg2))` }}
+      data-info="Click ▶ to launch (quantized). Double-click to edit notes. Right-click for more."
+      draggable
+      onDragStart={e => { e.dataTransfer.setData('stg/clip', key); e.dataTransfer.effectAllowed = 'copyMove' }}
+      onDragOver={e => e.preventDefault()}
+      onDrop={onDrop}
+      onClick={() => selectClip({ kind: 'session', trackId, sceneId })}
+      onDoubleClick={open}
+      onContextMenu={e => openMenu(e, menuItems)}
+    >
+      <button
+        className="slot-play"
+        style={{ color: st.playing ? 'var(--ok)' : color }}
+        onClick={e => {
+          e.stopPropagation()
+          if (st.playing && !st.queued) engine.stopClip(trackId)
+          else engine.launchClip(trackId, sceneId)
+        }}
+      >
+        {st.playing && !st.stopQueued ? '■' : '▶'}
+      </button>
+      {renaming
+        ? <InlineRename value={name} onDone={v => { setRenaming(false); if (v) setClipField({ kind: 'session', trackId, sceneId }, 'name', v) }} />
+        : <span className="slot-name">{name}</span>}
+      {st.playing && <ClipProgress trackId={trackId} />}
+      {remoteEditors.length > 0 && (
+        <div className="remote-dots">
+          {remoteEditors.map(p => <span key={p.id} className="remote-dot" style={{ background: p.state.color }} title={`${p.state.name} is here`} />)}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function TrackHeader({ track }: { track: Y.Map<any> }) {
+  const trackId = track.get('id') as string
+  const isArmed = useUI(s => s.armTrackId === trackId)
+  const isSel = useUI(s => s.selTrackId === trackId)
+  const [renaming, setRenaming] = useState(false)
+  const color = CLIP_COLORS[track.get('color') ?? 0]
+  const kind = track.get('kind')
+
+  const menu: MenuItem[] = [
+    { label: 'Rename', fn: () => setRenaming(true) },
+    { custom: <ColorRow colors={CLIP_COLORS} onPick={i => setTrackColor(trackId, i)} /> },
+    { label: 'Duplicate track', fn: () => duplicateTrack(trackId) },
+    { label: '← Move left', fn: () => moveTrack(trackId, -1) },
+    { label: '→ Move right', fn: () => moveTrack(trackId, 1) },
+    'sep',
+    { label: 'Delete track', fn: () => { if (confirm(`Delete "${track.get('name')}"?`)) removeTrack(trackId) }, danger: true },
+  ]
+
+  return (
+    <div
+      className={`track-head ${isSel ? 'selected' : ''}`}
+      style={{ borderTopColor: color }}
+      onClick={() => { selectTrack(trackId); setUI({ detailOpen: true, detailTab: 'devices' }) }}
+      onContextMenu={e => openMenu(e, menu)}
+      onDragOver={e => e.preventDefault()}
+      onDrop={e => {
+        const presetName = e.dataTransfer.getData('stg/preset')
+        const kitName = e.dataTransfer.getData('stg/kit')
+        if (presetName) { selectTrack(trackId); const p = INST_PRESETS.find(x => x.name === presetName); if (p) applyPreset(p) }
+        if (kitName) { selectTrack(trackId); applyDrumKit(kitName) }
+      }}
+      data-info="Click to select & open devices. Right-click for track options."
+    >
+      <div className="track-title">
+        <span className="track-icon">{kind === 'drum' ? '🥁' : '〰️'}</span>
+        {renaming
+          ? <InlineRename value={track.get('name')} onDone={v => { setRenaming(false); if (v) renameTrack(trackId, v) }} />
+          : <span className="track-name" onDoubleClick={() => setRenaming(true)}>{track.get('name')}</span>}
+      </div>
+      <div className="track-btns">
+        <button
+          className={`tbtn arm ${isArmed ? 'on' : ''}`}
+          data-info="Arm: route your keyboard/MIDI to this track (and record into it)"
+          onClick={e => { e.stopPropagation(); setUI({ armTrackId: isArmed ? null : trackId }) }}
+        >●</button>
+        <button
+          className={`tbtn mute ${track.get('mute') ? 'on' : ''}`}
+          data-info="Mute track"
+          onClick={e => { e.stopPropagation(); setTrackMix(trackId, { mute: !track.get('mute') }) }}
+        >M</button>
+        <button
+          className={`tbtn solo ${track.get('solo') ? 'on' : ''}`}
+          data-info="Solo track"
+          onClick={e => { e.stopPropagation(); setTrackMix(trackId, { solo: !track.get('solo') }) }}
+        >S</button>
+      </div>
+      <div className="track-mix" onClick={e => e.stopPropagation()}>
+        <Fader value={track.get('gain') ?? 0} onChange={v => setTrackMix(trackId, { gain: v })} height={64} />
+        <MeterBar getDb={() => engine.meterDb(trackId)} height={64} />
+        <Knob spec={PAN_SPEC} value={track.get('pan') ?? 0} onChange={v => setTrackMix(trackId, { pan: v })} size={26} />
+      </div>
+    </div>
+  )
+}
+
+function SceneCell({ scene, index }: { scene: Y.Map<any>; index: number }) {
+  const sceneId = scene.get('id') as string
+  const [renaming, setRenaming] = useState(false)
+  return (
+    <div
+      className="scene-cell"
+      data-info={`Launch scene ${index + 1} (also: press ${index + 1} on your keyboard)`}
+      onContextMenu={e => openMenu(e, [
+        { label: 'Rename', fn: () => setRenaming(true) },
+        { label: 'Duplicate scene', fn: () => duplicateScene(sceneId) },
+        { label: '→ Send scene to Arrangement', fn: () => { sendSceneToArr(sceneId, Math.round(engine.arrSeekTicks)); toast('Scene sent to arrangement') } },
+        'sep',
+        { label: 'Delete scene', fn: () => removeScene(sceneId), danger: true },
+      ])}
+    >
+      <button className="scene-play" onClick={() => engine.launchScene(sceneId)}>▶</button>
+      {renaming
+        ? <InlineRename value={scene.get('name')} onDone={v => { setRenaming(false); if (v) renameScene(sceneId, v) }} />
+        : <span className="scene-name" onDoubleClick={() => setRenaming(true)}>{scene.get('name')}</span>}
+    </div>
+  )
+}
+
+export function SessionView() {
+  useY(tracks)
+  useY(scenes)
+  useY(clips)
+  useY(meta)
+  useEngineTick()
+
+  return (
+    <div className="session" onClick={e => { if (e.target === e.currentTarget) selectClip(null) }}>
+      <div className="session-scroll">
+        {tracks.toArray().map(t => (
+          <div className="track-col" key={t.get('id')}>
+            <TrackHeader track={t} />
+            <div className="slots">
+              {scenes.toArray().map(s => (
+                <ClipSlot key={s.get('id')} track={t} sceneId={s.get('id')} />
+              ))}
+            </div>
+            <button className="track-stop" data-info="Stop this track's clip" onClick={() => engine.stopClip(t.get('id'))}>◻</button>
+          </div>
+        ))}
+
+        <div className="track-col add-col">
+          <div className="add-track-box">
+            <button className="add-btn" onClick={() => addSynthTrack()} data-info="Add a synth track">＋ Synth</button>
+            <button className="add-btn" onClick={() => addDrumTrack()} data-info="Add a drum track">＋ Drums</button>
+          </div>
+        </div>
+
+        <div className="track-col scene-col">
+          <div className="scene-col-head">
+            <span>Scenes</span>
+          </div>
+          <div className="slots">
+            {scenes.toArray().map((s, i) => <SceneCell key={s.get('id')} scene={s} index={i} />)}
+          </div>
+          <button className="add-scene" onClick={() => addScene()} data-info="Add a scene (row of clips)">＋ Scene</button>
+          <div className="master-strip" data-info="Master volume & output meter">
+            <span className="master-label">Master</span>
+            <div className="master-mix">
+              <Fader value={meta.get('masterGain') ?? 0} onChange={v => setMetaField('Master volume', 'masterGain', v)} height={80} />
+              <MeterBar getDb={() => engine.masterDb()} height={80} />
+            </div>
+            <button className="stop-all" onClick={() => engine.stopAllClips()} data-info="Stop all clips (transport keeps rolling)">◻ All</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}

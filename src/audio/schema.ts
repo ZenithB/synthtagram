@@ -1,0 +1,187 @@
+// Pure data: parameter specs for every instrument & effect module.
+// The device rack UI, preset system and audio factories all read from here,
+// so adding a module = add a spec + a factory. No tone imports allowed.
+
+export type ParamSpec = {
+  key: string
+  label: string
+  min: number
+  max: number
+  def: number
+  exp?: boolean            // exponential knob response
+  int?: boolean            // integer steps
+  steps?: string[]         // enum knob: value is an index into steps
+  fmt?: (v: number) => string
+}
+
+export const fmtHz = (v: number) => (v >= 1000 ? `${(v / 1000).toFixed(1)}k` : `${Math.round(v)}Hz`)
+export const fmtSec = (v: number) => (v < 1 ? `${Math.round(v * 1000)}ms` : `${v.toFixed(2)}s`)
+export const fmtDb = (v: number) => `${v > 0 ? '+' : ''}${v.toFixed(1)}dB`
+export const fmtPct = (v: number) => `${Math.round(v * 100)}%`
+export const fmtSemi = (v: number) => `${v > 0 ? '+' : ''}${Math.round(v)}st`
+export const fmtX = (v: number) => `${v.toFixed(2)}x`
+
+const adsr = (a: number, d: number, s: number, r: number): ParamSpec[] => [
+  { key: 'attack', label: 'Attack', min: 0.001, max: 2, def: a, exp: true, fmt: fmtSec },
+  { key: 'decay', label: 'Decay', min: 0.01, max: 2, def: d, exp: true, fmt: fmtSec },
+  { key: 'sustain', label: 'Sustain', min: 0, max: 1, def: s, fmt: fmtPct },
+  { key: 'release', label: 'Release', min: 0.01, max: 4, def: r, exp: true, fmt: fmtSec },
+]
+
+export const WAVES = ['sawtooth', 'square', 'triangle', 'sine']
+const WAVE_LABELS = ['Saw', 'Sqr', 'Tri', 'Sin']
+
+export const DELAY_DIVS = ['1/32', '1/16', '1/8', '3/16', '1/4', '1/2']
+export const DELAY_FRACTIONS = [1 / 32, 1 / 16, 1 / 8, 3 / 16, 1 / 4, 1 / 2] // of a whole note
+
+// ----------------- instruments -----------------
+export type InstrumentSchema = { type: string; label: string; icon: string; params: ParamSpec[] }
+
+const PAD_NAMES = ['Kick', 'Snare', 'Clap', 'Cl Hat', 'Op Hat', 'Lo Tom', 'Perc', 'Crash']
+const PAD_DECAYS = [0.42, 0.18, 0.28, 0.06, 0.4, 0.32, 0.12, 1.3]
+
+function drumParams(): ParamSpec[] {
+  const out: ParamSpec[] = []
+  PAD_NAMES.forEach((name, i) => {
+    out.push(
+      { key: `p${i}_tune`, label: `${name} Tune`, min: -12, max: 12, def: 0, fmt: fmtSemi },
+      { key: `p${i}_decay`, label: `${name} Decay`, min: 0.03, max: 2, def: PAD_DECAYS[i], exp: true, fmt: fmtSec },
+      { key: `p${i}_level`, label: `${name} Level`, min: -24, max: 6, def: 0, fmt: fmtDb },
+    )
+  })
+  return out
+}
+
+export const INSTRUMENTS: InstrumentSchema[] = [
+  {
+    type: 'poly', label: 'Analog Poly', icon: '〰️',
+    params: [
+      { key: 'wave', label: 'Wave', min: 0, max: 3, def: 0, int: true, steps: WAVE_LABELS },
+      { key: 'cutoff', label: 'Cutoff', min: 80, max: 14000, def: 7000, exp: true, fmt: fmtHz },
+      { key: 'res', label: 'Res', min: 0, max: 10, def: 0.7, fmt: v => v.toFixed(1) },
+      ...adsr(0.01, 0.15, 0.6, 0.4),
+    ],
+  },
+  {
+    type: 'fm', label: 'FM Synth', icon: '🔔',
+    params: [
+      { key: 'harm', label: 'Ratio', min: 0.25, max: 8, def: 3, fmt: fmtX },
+      { key: 'modIdx', label: 'FM Amt', min: 0.5, max: 40, def: 10, exp: true, fmt: v => v.toFixed(1) },
+      ...adsr(0.005, 0.3, 0.4, 0.6),
+    ],
+  },
+  {
+    type: 'mono', label: 'Mono Bass', icon: '🐍',
+    params: [
+      { key: 'wave', label: 'Wave', min: 0, max: 3, def: 0, int: true, steps: WAVE_LABELS },
+      { key: 'cutoff', label: 'Cutoff', min: 40, max: 8000, def: 900, exp: true, fmt: fmtHz },
+      { key: 'res', label: 'Res', min: 0, max: 10, def: 2, fmt: v => v.toFixed(1) },
+      { key: 'envAmt', label: 'Env Amt', min: 0, max: 6, def: 2.5, fmt: v => v.toFixed(1) },
+      { key: 'glide', label: 'Glide', min: 0, max: 0.3, def: 0.02, exp: false, fmt: fmtSec },
+      ...adsr(0.003, 0.2, 0.45, 0.25),
+    ],
+  },
+  {
+    type: 'pluck', label: 'Pluck', icon: '🪕',
+    params: [
+      { key: 'dampen', label: 'Tone', min: 500, max: 12000, def: 4000, exp: true, fmt: fmtHz },
+      { key: 'res', label: 'Sustain', min: 0.3, max: 0.98, def: 0.93, fmt: fmtPct },
+    ],
+  },
+  {
+    type: 'keys', label: 'Dream Keys', icon: '🎹',
+    params: [
+      { key: 'harm', label: 'Color', min: 0.5, max: 4, def: 2, fmt: fmtX },
+      ...adsr(0.01, 0.4, 0.5, 0.8),
+    ],
+  },
+  { type: 'drum', label: 'Drum Kit', icon: '🥁', params: drumParams() },
+]
+
+// ----------------- effects -----------------
+export type EffectSchema = { type: string; label: string; icon: string; params: ParamSpec[] }
+
+export const EFFECTS: EffectSchema[] = [
+  {
+    type: 'eq', label: 'EQ Three', icon: '🎚️',
+    params: [
+      { key: 'low', label: 'Low', min: -12, max: 12, def: 0, fmt: fmtDb },
+      { key: 'mid', label: 'Mid', min: -12, max: 12, def: 0, fmt: fmtDb },
+      { key: 'high', label: 'High', min: -12, max: 12, def: 0, fmt: fmtDb },
+    ],
+  },
+  {
+    type: 'filter', label: 'Filter', icon: '🌀',
+    params: [
+      { key: 'ftype', label: 'Type', min: 0, max: 2, def: 0, int: true, steps: ['LP', 'HP', 'BP'] },
+      { key: 'freq', label: 'Freq', min: 40, max: 18000, def: 2000, exp: true, fmt: fmtHz },
+      { key: 'q', label: 'Res', min: 0, max: 12, def: 1, fmt: v => v.toFixed(1) },
+    ],
+  },
+  {
+    type: 'delay', label: 'Echo', icon: '⏱️',
+    params: [
+      { key: 'time', label: 'Time', min: 0, max: DELAY_DIVS.length - 1, def: 2, int: true, steps: DELAY_DIVS },
+      { key: 'fb', label: 'Feedback', min: 0, max: 0.85, def: 0.35, fmt: fmtPct },
+      { key: 'mix', label: 'Mix', min: 0, max: 1, def: 0.35, fmt: fmtPct },
+    ],
+  },
+  {
+    type: 'reverb', label: 'Reverb', icon: '🏛️',
+    params: [
+      { key: 'size', label: 'Size', min: 0.2, max: 10, def: 2.2, exp: true, fmt: fmtSec },
+      { key: 'mix', label: 'Mix', min: 0, max: 1, def: 0.3, fmt: fmtPct },
+    ],
+  },
+  {
+    type: 'chorus', label: 'Chorus', icon: '🌊',
+    params: [
+      { key: 'rate', label: 'Rate', min: 0.1, max: 8, def: 1.5, exp: true, fmt: v => `${v.toFixed(1)}Hz` },
+      { key: 'depth', label: 'Depth', min: 0, max: 1, def: 0.5, fmt: fmtPct },
+      { key: 'mix', label: 'Mix', min: 0, max: 1, def: 0.5, fmt: fmtPct },
+    ],
+  },
+  {
+    type: 'dist', label: 'Drive', icon: '🔥',
+    params: [
+      { key: 'amt', label: 'Drive', min: 0, max: 1, def: 0.4, fmt: fmtPct },
+      { key: 'mix', label: 'Mix', min: 0, max: 1, def: 1, fmt: fmtPct },
+    ],
+  },
+  {
+    type: 'crush', label: 'Crusher', icon: '🎮',
+    params: [
+      { key: 'bits', label: 'Bits', min: 1, max: 16, def: 8, int: true, fmt: v => `${Math.round(v)}bit` },
+      { key: 'mix', label: 'Mix', min: 0, max: 1, def: 1, fmt: fmtPct },
+    ],
+  },
+  {
+    type: 'comp', label: 'Compressor', icon: '🗜️',
+    params: [
+      { key: 'thresh', label: 'Thresh', min: -60, max: 0, def: -20, fmt: fmtDb },
+      { key: 'ratio', label: 'Ratio', min: 1, max: 20, def: 4, fmt: v => `${v.toFixed(0)}:1` },
+      { key: 'attack', label: 'Attack', min: 0.001, max: 0.3, def: 0.01, exp: true, fmt: fmtSec },
+      { key: 'release', label: 'Release', min: 0.02, max: 1, def: 0.2, exp: true, fmt: fmtSec },
+    ],
+  },
+  {
+    type: 'phaser', label: 'Phaser', icon: '🛸',
+    params: [
+      { key: 'rate', label: 'Rate', min: 0.05, max: 8, def: 0.8, exp: true, fmt: v => `${v.toFixed(2)}Hz` },
+      { key: 'octaves', label: 'Sweep', min: 1, max: 6, def: 3, int: true, fmt: v => `${Math.round(v)}oct` },
+      { key: 'mix', label: 'Mix', min: 0, max: 1, def: 0.5, fmt: fmtPct },
+    ],
+  },
+]
+
+export function instSchema(type: string) {
+  return INSTRUMENTS.find(i => i.type === type) ?? INSTRUMENTS[0]
+}
+export function fxSchema(type: string) {
+  return EFFECTS.find(e => e.type === type) ?? EFFECTS[0]
+}
+export function defaultsFor(specs: ParamSpec[]): Record<string, number> {
+  const out: Record<string, number> = {}
+  specs.forEach(s => { out[s.key] = s.def })
+  return out
+}

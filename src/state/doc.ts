@@ -1,0 +1,614 @@
+// The shared project document (Yjs CRDT) + every mutation the app performs on it.
+// All edits go through mutate() so they are undoable, labeled for the history
+// panel, and tagged with LOCAL origin (remote peers' edits are not undoable by us).
+
+import * as Y from 'yjs'
+import { IndexeddbPersistence } from 'y-indexeddb'
+import { nanoid } from 'nanoid'
+import { BAR, CLIP_COLORS, Note, ClipRef, TrackKind } from '../types'
+
+export const LOCAL = { local: true }
+
+// ---------- rooms ----------
+export function roomIdFromHash(): string | null {
+  const m = location.hash.match(/r=([A-Za-z0-9_-]+)/)
+  return m ? m[1] : null
+}
+export const roomId = roomIdFromHash()
+export const docName = roomId ? `sf-room-${roomId}` : 'sf-local'
+
+export const doc = new Y.Doc()
+export const meta = doc.getMap<any>('meta')
+export const tracks = doc.getArray<Y.Map<any>>('tracks')
+export const scenes = doc.getArray<Y.Map<any>>('scenes')
+export const clips = doc.getMap<Y.Map<any>>('clips') // key: `${trackId}|${sceneId}`
+export const arr = doc.getMap<Y.Map<any>>('arr')     // key: arrangement clip id
+export const chat = doc.getArray<any>('chat')
+
+export const idb = new IndexeddbPersistence(docName, doc)
+
+// ---------- labeled transactions (for the undo-history panel) ----------
+let pendingLabel: string | null = null
+export function mutate(label: string, fn: () => void) {
+  pendingLabel = label
+  try {
+    doc.transact(fn, LOCAL)
+  } finally {
+    pendingLabel = null
+  }
+}
+export function takePendingLabel() {
+  return pendingLabel
+}
+
+export const id8 = () => nanoid(8)
+export const clipKey = (trackId: string, sceneId: string) => `${trackId}|${sceneId}`
+
+// ---------- JSON shapes (copy/paste, packs, import/export) ----------
+export type ClipJSON = { name: string; color: number; len: number; notes: Record<string, Note> }
+export type FxJSON = { type: string; on: boolean; params: Record<string, number> }
+export type TrackJSON = {
+  id?: string; name: string; color: number; kind: TrackKind
+  inst: { type: string; params: Record<string, number> }
+  fx: FxJSON[]
+  gain: number; pan: number; mute: boolean; solo: boolean
+}
+export type ProjectJSON = {
+  meta: { title: string; bpm: number; swing: number; root: number; scale: string; launchQ: number }
+  tracks: TrackJSON[]
+  scenes: { id?: string; name: string }[]
+  clips: Record<string, ClipJSON>
+  arr: Record<string, ClipJSON & { trackId: string; start: number }>
+}
+
+// ---------- Y builders ----------
+function yNotes(notes: Record<string, Note>) {
+  const m = new Y.Map<Note>()
+  for (const [nid, n] of Object.entries(notes)) m.set(nid, { ...n })
+  return m
+}
+
+export function jsonToClipMap(json: ClipJSON, extra?: Record<string, any>) {
+  const m = new Y.Map<any>()
+  m.set('id', id8())
+  m.set('name', json.name)
+  m.set('color', json.color)
+  m.set('len', json.len)
+  m.set('notes', yNotes(json.notes))
+  if (extra) for (const [k, v] of Object.entries(extra)) m.set(k, v)
+  return m
+}
+
+export function clipToJSON(m: Y.Map<any>): ClipJSON {
+  const notes: Record<string, Note> = {}
+  const nm = m.get('notes') as Y.Map<Note>
+  if (nm) nm.forEach((n, k) => { notes[k] = { ...n } })
+  return { name: m.get('name') ?? 'Clip', color: m.get('color') ?? 0, len: m.get('len') ?? BAR, notes }
+}
+
+function yFx(fx: FxJSON) {
+  const m = new Y.Map<any>()
+  m.set('id', id8())
+  m.set('type', fx.type)
+  m.set('on', fx.on)
+  const pm = new Y.Map<number>()
+  for (const [k, v] of Object.entries(fx.params)) pm.set(k, v)
+  m.set('params', pm)
+  return m
+}
+
+function yTrack(t: TrackJSON) {
+  const m = new Y.Map<any>()
+  m.set('id', t.id ?? id8())
+  m.set('name', t.name)
+  m.set('color', t.color)
+  m.set('kind', t.kind)
+  const inst = new Y.Map<any>()
+  inst.set('type', t.inst.type)
+  const pm = new Y.Map<number>()
+  for (const [k, v] of Object.entries(t.inst.params)) pm.set(k, v)
+  inst.set('params', pm)
+  m.set('inst', inst)
+  const fxArr = new Y.Array<Y.Map<any>>()
+  fxArr.push(t.fx.map(yFx))
+  m.set('fx', fxArr)
+  m.set('gain', t.gain)
+  m.set('pan', t.pan)
+  m.set('mute', t.mute)
+  m.set('solo', t.solo)
+  return m
+}
+
+// ---------- lookups ----------
+export function trackById(trackId: string): Y.Map<any> | undefined {
+  for (let i = 0; i < tracks.length; i++) {
+    const t = tracks.get(i)
+    if (t.get('id') === trackId) return t
+  }
+  return undefined
+}
+export function trackIndex(trackId: string) {
+  for (let i = 0; i < tracks.length; i++) if (tracks.get(i).get('id') === trackId) return i
+  return -1
+}
+export function sceneIndex(sceneId: string) {
+  for (let i = 0; i < scenes.length; i++) if (scenes.get(i).get('id') === sceneId) return i
+  return -1
+}
+export function getClipMap(ref: ClipRef | null): Y.Map<any> | null {
+  if (!ref) return null
+  if (ref.kind === 'session') return (clips.get(clipKey(ref.trackId, ref.sceneId)) as Y.Map<any>) ?? null
+  return (arr.get(ref.id) as Y.Map<any>) ?? null
+}
+
+// ---------- meta ----------
+export function setMetaField(label: string, k: string, v: any) {
+  mutate(label, () => meta.set(k, v))
+}
+export const setBpm = (v: number) => setMetaField('Change tempo', 'bpm', Math.round(v * 10) / 10)
+export const setSwing = (v: number) => setMetaField('Change swing', 'swing', v)
+export const setTitle = (v: string) => setMetaField('Rename project', 'title', v)
+export const setLaunchQ = (bars: number) => setMetaField('Launch quantize', 'launchQ', bars)
+export function setKeyScale(root: number, scale: string) {
+  mutate('Change key', () => { meta.set('root', root); meta.set('scale', scale) })
+}
+export function setLoopRegion(start: number, end: number, on: boolean) {
+  mutate('Loop region', () => { meta.set('loopStart', start); meta.set('loopEnd', end); meta.set('loopOn', on) })
+}
+
+// ---------- tracks ----------
+export function addTrack(t: TrackJSON): string {
+  const tid = t.id ?? id8()
+  const m = yTrack({ ...t, id: tid })
+  mutate(`Add track "${t.name}"`, () => tracks.push([m]))
+  return tid
+}
+
+export function removeTrack(trackId: string) {
+  mutate('Delete track', () => {
+    const i = trackIndex(trackId)
+    if (i >= 0) tracks.delete(i)
+    const keys: string[] = []
+    clips.forEach((_v, k) => { if (k.startsWith(trackId + '|')) keys.push(k) })
+    keys.forEach(k => clips.delete(k))
+    const arrIds: string[] = []
+    arr.forEach((v, k) => { if (v.get('trackId') === trackId) arrIds.push(k) })
+    arrIds.forEach(k => arr.delete(k))
+  })
+}
+
+export function duplicateTrack(trackId: string): string | null {
+  const t = trackById(trackId)
+  if (!t) return null
+  const json: TrackJSON = {
+    name: t.get('name') + ' copy', color: t.get('color'), kind: t.get('kind'),
+    inst: { type: t.get('inst').get('type'), params: Object.fromEntries((t.get('inst').get('params') as Y.Map<number>).entries()) },
+    fx: (t.get('fx') as Y.Array<Y.Map<any>>).toArray().map(f => ({
+      type: f.get('type'), on: f.get('on'),
+      params: Object.fromEntries((f.get('params') as Y.Map<number>).entries()),
+    })),
+    gain: t.get('gain'), pan: t.get('pan'), mute: t.get('mute'), solo: false,
+  }
+  const newId = id8()
+  json.id = newId
+  const m = yTrack(json)
+  mutate('Duplicate track', () => {
+    const i = trackIndex(trackId)
+    tracks.insert(i + 1, [m])
+    clips.forEach((v, k) => {
+      if (k.startsWith(trackId + '|')) {
+        const sceneId = k.split('|')[1]
+        clips.set(clipKey(newId, sceneId), jsonToClipMap(clipToJSON(v)))
+      }
+    })
+  })
+  return newId
+}
+
+export const renameTrack = (trackId: string, name: string) =>
+  mutate('Rename track', () => trackById(trackId)?.set('name', name))
+export const setTrackColor = (trackId: string, color: number) =>
+  mutate('Track color', () => trackById(trackId)?.set('color', color))
+
+export function moveTrack(trackId: string, dir: -1 | 1) {
+  const i = trackIndex(trackId)
+  const j = i + dir
+  if (i < 0 || j < 0 || j >= tracks.length) return
+  mutate('Move track', () => {
+    const t = tracks.get(i)
+    const json = t.toJSON()
+    // Y arrays can't move; delete + reinsert a deep copy
+    const fresh = yTrack({
+      id: json.id, name: json.name, color: json.color, kind: json.kind,
+      inst: json.inst, fx: json.fx ?? [], gain: json.gain, pan: json.pan, mute: json.mute, solo: json.solo,
+    })
+    tracks.delete(i)
+    tracks.insert(j, [fresh])
+  })
+}
+
+export function setTrackMix(trackId: string, patch: Partial<{ gain: number; pan: number; mute: boolean; solo: boolean }>) {
+  mutate('Mixer', () => {
+    const t = trackById(trackId)
+    if (!t) return
+    for (const [k, v] of Object.entries(patch)) t.set(k, v)
+  })
+}
+
+export function setInstrument(trackId: string, type: string, params: Record<string, number>, label = 'Change instrument') {
+  mutate(label, () => {
+    const t = trackById(trackId)
+    if (!t) return
+    const inst = new Y.Map<any>()
+    inst.set('type', type)
+    const pm = new Y.Map<number>()
+    for (const [k, v] of Object.entries(params)) pm.set(k, v)
+    inst.set('params', pm)
+    t.set('inst', inst)
+  })
+}
+
+export function setInstParam(trackId: string, key: string, val: number) {
+  mutate('Tweak instrument', () => {
+    const t = trackById(trackId)
+    if (!t) return
+    ;(t.get('inst').get('params') as Y.Map<number>).set(key, val)
+  })
+}
+
+export function addFx(trackId: string, type: string, params: Record<string, number>) {
+  mutate(`Add ${type}`, () => {
+    const t = trackById(trackId)
+    if (!t) return
+    ;(t.get('fx') as Y.Array<Y.Map<any>>).push([yFx({ type, on: true, params })])
+  })
+}
+
+function fxIndex(t: Y.Map<any>, fxId: string) {
+  const fx = t.get('fx') as Y.Array<Y.Map<any>>
+  for (let i = 0; i < fx.length; i++) if (fx.get(i).get('id') === fxId) return i
+  return -1
+}
+
+export function removeFx(trackId: string, fxId: string) {
+  mutate('Remove effect', () => {
+    const t = trackById(trackId)
+    if (!t) return
+    const i = fxIndex(t, fxId)
+    if (i >= 0) (t.get('fx') as Y.Array<Y.Map<any>>).delete(i)
+  })
+}
+
+export function moveFx(trackId: string, fxId: string, dir: -1 | 1) {
+  mutate('Reorder effects', () => {
+    const t = trackById(trackId)
+    if (!t) return
+    const fx = t.get('fx') as Y.Array<Y.Map<any>>
+    const i = fxIndex(t, fxId)
+    const j = i + dir
+    if (i < 0 || j < 0 || j >= fx.length) return
+    const f = fx.get(i)
+    const json = { type: f.get('type'), on: f.get('on'), params: Object.fromEntries((f.get('params') as Y.Map<number>).entries()) }
+    fx.delete(i)
+    fx.insert(j, [yFx(json)])
+  })
+}
+
+export function setFxParam(trackId: string, fxId: string, key: string, val: number) {
+  mutate('Tweak effect', () => {
+    const t = trackById(trackId)
+    if (!t) return
+    const i = fxIndex(t, fxId)
+    if (i >= 0) ((t.get('fx') as Y.Array<Y.Map<any>>).get(i).get('params') as Y.Map<number>).set(key, val)
+  })
+}
+
+export function setFxOn(trackId: string, fxId: string, on: boolean) {
+  mutate(on ? 'Enable effect' : 'Bypass effect', () => {
+    const t = trackById(trackId)
+    if (!t) return
+    const i = fxIndex(t, fxId)
+    if (i >= 0) (t.get('fx') as Y.Array<Y.Map<any>>).get(i).set('on', on)
+  })
+}
+
+// ---------- scenes ----------
+export function addScene(afterIndex?: number): string {
+  const m = new Y.Map<any>()
+  const sid = id8()
+  m.set('id', sid)
+  m.set('name', `Scene ${scenes.length + 1}`)
+  mutate('Add scene', () => {
+    const at = afterIndex === undefined ? scenes.length : afterIndex + 1
+    scenes.insert(at, [m])
+  })
+  return sid
+}
+
+export function removeScene(sceneId: string) {
+  mutate('Delete scene', () => {
+    const i = sceneIndex(sceneId)
+    if (i >= 0) scenes.delete(i)
+    const keys: string[] = []
+    clips.forEach((_v, k) => { if (k.endsWith('|' + sceneId)) keys.push(k) })
+    keys.forEach(k => clips.delete(k))
+  })
+}
+
+export const renameScene = (sceneId: string, name: string) =>
+  mutate('Rename scene', () => {
+    const i = sceneIndex(sceneId)
+    if (i >= 0) scenes.get(i).set('name', name)
+  })
+
+export function duplicateScene(sceneId: string): string {
+  const newId = id8()
+  mutate('Duplicate scene', () => {
+    const i = sceneIndex(sceneId)
+    if (i < 0) return
+    const m = new Y.Map<any>()
+    m.set('id', newId)
+    m.set('name', scenes.get(i).get('name') + ' copy')
+    scenes.insert(i + 1, [m])
+    clips.forEach((v, k) => {
+      if (k.endsWith('|' + sceneId)) {
+        const trackId = k.split('|')[0]
+        clips.set(clipKey(trackId, newId), jsonToClipMap(clipToJSON(v)))
+      }
+    })
+  })
+  return newId
+}
+
+// ---------- session clips ----------
+export function createClip(trackId: string, sceneId: string, json?: ClipJSON): ClipRef {
+  const t = trackById(trackId)
+  const sIdx = sceneIndex(sceneId)
+  const base: ClipJSON = json ?? {
+    name: `${t?.get('name') ?? 'Clip'} ${sIdx + 1}`,
+    color: t?.get('color') ?? 0,
+    len: BAR,
+    notes: {},
+  }
+  mutate(json ? 'Paste clip' : 'Create clip', () => {
+    clips.set(clipKey(trackId, sceneId), jsonToClipMap(base))
+  })
+  return { kind: 'session', trackId, sceneId }
+}
+
+export function deleteClipAt(trackId: string, sceneId: string) {
+  mutate('Delete clip', () => clips.delete(clipKey(trackId, sceneId)))
+}
+
+export function setClipField(ref: ClipRef, k: 'name' | 'color' | 'len', v: any, label?: string) {
+  mutate(label ?? `Clip ${k}`, () => getClipMap(ref)?.set(k, v))
+}
+
+export function duplicateClipTo(src: ClipRef, trackId: string, sceneId: string) {
+  const m = getClipMap(src)
+  if (!m) return
+  const json = clipToJSON(m)
+  mutate('Duplicate clip', () => clips.set(clipKey(trackId, sceneId), jsonToClipMap(json)))
+}
+
+// ---------- notes (session or arrangement clips alike) ----------
+export function addNote(clipMap: Y.Map<any>, n: Note, label = 'Add note'): string {
+  const nid = id8()
+  mutate(label, () => (clipMap.get('notes') as Y.Map<Note>).set(nid, { ...n }))
+  return nid
+}
+
+export function updateNotes(clipMap: Y.Map<any>, entries: [string, Partial<Note>][], label = 'Edit notes') {
+  mutate(label, () => {
+    const nm = clipMap.get('notes') as Y.Map<Note>
+    for (const [nid, patch] of entries) {
+      const cur = nm.get(nid)
+      if (cur) nm.set(nid, { ...cur, ...patch })
+    }
+  })
+}
+
+export function deleteNotes(clipMap: Y.Map<any>, ids: string[], label = 'Delete notes') {
+  mutate(label, () => {
+    const nm = clipMap.get('notes') as Y.Map<Note>
+    ids.forEach(nid => nm.delete(nid))
+  })
+}
+
+export function addNotes(clipMap: Y.Map<any>, notes: Note[], label = 'Add notes'): string[] {
+  const ids: string[] = []
+  mutate(label, () => {
+    const nm = clipMap.get('notes') as Y.Map<Note>
+    for (const n of notes) {
+      const nid = id8()
+      ids.push(nid)
+      nm.set(nid, { ...n })
+    }
+  })
+  return ids
+}
+
+export function replaceNotes(clipMap: Y.Map<any>, notes: Record<string, Note>, label = 'Transform notes') {
+  mutate(label, () => {
+    const nm = clipMap.get('notes') as Y.Map<Note>
+    const old: string[] = []
+    nm.forEach((_n, k) => old.push(k))
+    old.forEach(k => nm.delete(k))
+    for (const [nid, n] of Object.entries(notes)) nm.set(nid, { ...n })
+  })
+}
+
+export function notesOf(clipMap: Y.Map<any>): [string, Note][] {
+  const out: [string, Note][] = []
+  const nm = clipMap.get('notes') as Y.Map<Note>
+  if (nm) nm.forEach((n, k) => out.push([k, n]))
+  return out
+}
+
+// ---------- arrangement ----------
+export function addArrClip(trackId: string, start: number, json: ClipJSON, label = 'Add to arrangement'): string {
+  const aid = id8()
+  const m = jsonToClipMap(json, { trackId, start, id: aid })
+  mutate(label, () => arr.set(aid, m))
+  return aid
+}
+
+export function moveArrClip(aid: string, patch: Partial<{ start: number; trackId: string }>) {
+  mutate('Move clip', () => {
+    const m = arr.get(aid) as Y.Map<any>
+    if (!m) return
+    for (const [k, v] of Object.entries(patch)) m.set(k, v)
+  })
+}
+
+export function resizeArrClip(aid: string, len: number) {
+  mutate('Resize clip', () => (arr.get(aid) as Y.Map<any>)?.set('len', Math.max(BAR / 4, len)))
+}
+
+export function deleteArrClip(aid: string) {
+  mutate('Delete clip', () => arr.delete(aid))
+}
+
+export function duplicateArrClip(aid: string): string | null {
+  const m = arr.get(aid) as Y.Map<any>
+  if (!m) return null
+  return addArrClip(m.get('trackId'), m.get('start') + m.get('len'), clipToJSON(m), 'Duplicate clip')
+}
+
+export function sendClipToArr(trackId: string, sceneId: string, at: number) {
+  const m = clips.get(clipKey(trackId, sceneId)) as Y.Map<any>
+  if (!m) return
+  addArrClip(trackId, at, clipToJSON(m), 'Send to arrangement')
+}
+
+export function sendSceneToArr(sceneId: string, at: number) {
+  mutate('Scene to arrangement', () => {
+    clips.forEach((v, k) => {
+      if (k.endsWith('|' + sceneId)) {
+        const trackId = k.split('|')[0]
+        arr.set(id8(), jsonToClipMap(clipToJSON(v), { trackId, start: at }))
+      }
+    })
+  })
+}
+
+export function arrEndTicks(): number {
+  let end = 0
+  arr.forEach(m => { end = Math.max(end, (m.get('start') ?? 0) + (m.get('len') ?? 0)) })
+  return end
+}
+
+// ---------- chat ----------
+export function sendChat(name: string, color: string, text: string) {
+  doc.transact(() => {
+    chat.push([{ id: id8(), name, color, text, t: Date.now() }])
+    if (chat.length > 200) chat.delete(0, chat.length - 200)
+  }, LOCAL)
+}
+
+// ---------- project load/save ----------
+export function exportProject(): ProjectJSON {
+  const clipsJson: Record<string, ClipJSON> = {}
+  clips.forEach((v, k) => { clipsJson[k] = clipToJSON(v) })
+  const arrJson: ProjectJSON['arr'] = {}
+  arr.forEach((v, k) => {
+    arrJson[k] = { ...clipToJSON(v), trackId: v.get('trackId'), start: v.get('start') }
+  })
+  return {
+    meta: {
+      title: meta.get('title') ?? 'Untitled Jam',
+      bpm: meta.get('bpm') ?? 120,
+      swing: meta.get('swing') ?? 0,
+      root: meta.get('root') ?? 9,
+      scale: meta.get('scale') ?? 'minor',
+      launchQ: meta.get('launchQ') ?? 1,
+    },
+    tracks: tracks.toArray().map(t => ({
+      id: t.get('id'), name: t.get('name'), color: t.get('color'), kind: t.get('kind'),
+      inst: { type: t.get('inst').get('type'), params: Object.fromEntries((t.get('inst').get('params') as Y.Map<number>).entries()) },
+      fx: (t.get('fx') as Y.Array<Y.Map<any>>).toArray().map(f => ({
+        type: f.get('type'), on: f.get('on'),
+        params: Object.fromEntries((f.get('params') as Y.Map<number>).entries()),
+      })),
+      gain: t.get('gain'), pan: t.get('pan'), mute: t.get('mute'), solo: t.get('solo'),
+    })),
+    scenes: scenes.toArray().map(s => ({ id: s.get('id'), name: s.get('name') })),
+    clips: clipsJson,
+    arr: arrJson,
+  }
+}
+
+export function loadProject(json: ProjectJSON, label = 'Load project') {
+  mutate(label, () => {
+    // wipe
+    tracks.delete(0, tracks.length)
+    scenes.delete(0, scenes.length)
+    const ck: string[] = []
+    clips.forEach((_v, k) => ck.push(k))
+    ck.forEach(k => clips.delete(k))
+    const ak: string[] = []
+    arr.forEach((_v, k) => ak.push(k))
+    ak.forEach(k => arr.delete(k))
+    // meta
+    for (const [k, v] of Object.entries(json.meta)) meta.set(k, v)
+    meta.set('inited', true)
+    // id remapping (packs may use friendly ids)
+    const tidMap = new Map<string, string>()
+    const sidMap = new Map<string, string>()
+    for (const t of json.tracks) {
+      const tid = id8()
+      const m = yTrack({ ...t, id: tid })
+      tidMap.set(t.id ?? t.name, tid)
+      tracks.push([m])
+    }
+    for (const s of json.scenes) {
+      const m = new Y.Map<any>()
+      const sid = id8()
+      m.set('id', sid)
+      m.set('name', s.name)
+      sidMap.set(s.id ?? s.name, sid)
+      scenes.push([m])
+    }
+    for (const [key, c] of Object.entries(json.clips)) {
+      const [tOld, sOld] = key.split('|')
+      const tNew = tidMap.get(tOld)
+      const sNew = sidMap.get(sOld)
+      if (tNew && sNew) clips.set(clipKey(tNew, sNew), jsonToClipMap(c))
+    }
+    for (const a of Object.values(json.arr)) {
+      const tNew = tidMap.get(a.trackId)
+      if (tNew) arr.set(id8(), jsonToClipMap(a, { trackId: tNew, start: a.start }))
+    }
+  })
+}
+
+export function isDocEmpty() {
+  return !meta.get('inited')
+}
+
+export function initIfEmpty(defaultProject: ProjectJSON): boolean {
+  if (!isDocEmpty()) return false
+  loadProject(defaultProject, 'New project')
+  return true
+}
+
+// ---------- room creation (carry current project into a fresh shared room) ----------
+export function createRoomAndGo(): string {
+  const rid = nanoid(10)
+  sessionStorage.setItem('sf-carry', JSON.stringify(exportProject()))
+  location.hash = `r=${rid}`
+  location.reload()
+  return rid
+}
+
+export function leaveRoomAndGo() {
+  location.hash = ''
+  location.reload()
+}
+
+export function maybeTakeCarriedProject(): ProjectJSON | null {
+  const raw = sessionStorage.getItem('sf-carry')
+  if (!raw) return null
+  sessionStorage.removeItem('sf-carry')
+  try { return JSON.parse(raw) } catch { return null }
+}

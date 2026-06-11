@@ -1,0 +1,142 @@
+// App shell: layout, global shortcuts, presence heartbeat, info-view hover.
+
+import React, { useEffect } from 'react'
+import { Topbar } from './Topbar'
+import { Browser } from './Browser'
+import { SessionView } from './SessionView'
+import { ArrangementView } from './ArrangementView'
+import { PianoRoll } from './PianoRoll'
+import { DeviceRack } from './DeviceRack'
+import { Toasts, UndoPanel, CommandPalette, ShareDialog, HelpModal, ChatPanel, Onboard, StatusBar } from './panels'
+import { ContextMenuHost } from './widgets'
+import { setUI, ui, useUI } from '../state/store'
+import { engine } from '../audio/engine'
+import { undoMgr } from '../state/undo'
+import { chat, scenes, deleteClipAt, deleteArrClip, duplicateArrClip } from '../state/doc'
+import { setPresence } from '../state/net'
+import { copyClipRef, pasteClipTo, duplicateClipToNextScene } from './actions'
+
+export function App() {
+  const view = useUI(s => s.view)
+  const detailOpen = useUI(s => s.detailOpen)
+  const detailTab = useUI(s => s.detailTab)
+  const theme = useUI(s => s.theme)
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme
+  }, [theme])
+
+  // Info View: hover help in the status bar (the Ableton trick)
+  useEffect(() => {
+    let last = ''
+    const h = (e: MouseEvent) => {
+      const el = (e.target as HTMLElement).closest?.('[data-info]') as HTMLElement | null
+      const txt = el?.dataset.info ?? ''
+      if (txt !== last) {
+        last = txt
+        setUI({ infoText: txt })
+      }
+    }
+    document.addEventListener('mouseover', h)
+    return () => document.removeEventListener('mouseover', h)
+  }, [])
+
+  // presence: view + playhead heartbeat
+  useEffect(() => {
+    setPresence({ view })
+  }, [view])
+  useEffect(() => {
+    const iv = setInterval(() => {
+      setPresence({ ph: engine.playing ? { mode: engine.mode, ticks: Math.round(engine.positionTicks()) } : null })
+    }, 400)
+    return () => clearInterval(iv)
+  }, [])
+
+  // chat unread counter
+  useEffect(() => {
+    const h = () => { if (!ui.chatOpen) setUI({ chatUnread: ui.chatUnread + 1 }) }
+    chat.observe(h)
+    return () => chat.unobserve(h)
+  }, [])
+
+  // global shortcuts
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement
+      const typing = el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)
+      const mod = e.metaKey || e.ctrlKey
+      if (mod && e.key.toLowerCase() === 'k') { setUI({ paletteOpen: !ui.paletteOpen }); e.preventDefault(); return }
+      if (typing) return
+      if (e.key === ' ') { e.preventDefault(); engine.togglePlay(); return }
+      if (e.key === 'Tab') { e.preventDefault(); setUI({ view: ui.view === 'session' ? 'arr' : 'session' }); return }
+      if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); if (e.shiftKey) undoMgr.redo(); else undoMgr.undo(); return }
+      if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); undoMgr.redo(); return }
+      if (e.key === 'Escape') {
+        if (ui.paletteOpen || ui.shareOpen || ui.helpOpen || ui.historyOpen) {
+          setUI({ paletteOpen: false, shareOpen: false, helpOpen: false, historyOpen: false })
+        } else if (ui.detailOpen) setUI({ detailOpen: false })
+        return
+      }
+      if (e.key === '?') { setUI({ helpOpen: !ui.helpOpen }); return }
+      if (e.key.toLowerCase() === 'b' && !mod) { setUI({ drawMode: !ui.drawMode }); return }
+      if (e.key.toLowerCase() === 'm' && !mod) { setUI({ metronome: !ui.metronome }); return }
+      if (/^[1-9]$/.test(e.key) && !mod) {
+        const idx = +e.key - 1
+        if (idx < scenes.length) engine.launchScene(scenes.get(idx).get('id'))
+        return
+      }
+      if (!ui.detailOpen && ui.selClip) {
+        if (e.key === 'Delete' || e.key === 'Backspace') {
+          if (ui.selClip.kind === 'session') deleteClipAt(ui.selClip.trackId, ui.selClip.sceneId)
+          else deleteArrClip(ui.selClip.id)
+          setUI({ selClip: null })
+          return
+        }
+        if (mod && e.key.toLowerCase() === 'd') {
+          e.preventDefault()
+          if (ui.selClip.kind === 'session') duplicateClipToNextScene(ui.selClip)
+          else duplicateArrClip(ui.selClip.id)
+          return
+        }
+        if (mod && e.key.toLowerCase() === 'c') { copyClipRef(ui.selClip); return }
+      }
+      if (mod && e.key.toLowerCase() === 'v' && ui.selClip?.kind === 'session') {
+        pasteClipTo(ui.selClip.trackId, ui.selClip.sceneId)
+      }
+    }
+    window.addEventListener('keydown', h)
+    return () => window.removeEventListener('keydown', h)
+  }, [])
+
+  return (
+    <div className="app">
+      <Topbar />
+      <div className="main">
+        <Browser />
+        <div className="center">
+          {view === 'session' ? <SessionView /> : <ArrangementView />}
+        </div>
+        <ChatPanel />
+        <UndoPanel />
+      </div>
+      {detailOpen && (
+        <div className="detail">
+          <div className="detail-tabs">
+            <button className={`dtab ${detailTab === 'clip' ? 'on' : ''}`} onClick={() => setUI({ detailTab: 'clip' })} data-info="Edit the selected clip's notes">Clip</button>
+            <button className={`dtab ${detailTab === 'devices' ? 'on' : ''}`} onClick={() => setUI({ detailTab: 'devices' })} data-info="The selected track's instrument & effect chain">Devices</button>
+          </div>
+          <div className="detail-body">
+            {detailTab === 'clip' ? <PianoRoll /> : <DeviceRack />}
+          </div>
+        </div>
+      )}
+      <StatusBar />
+      <Toasts />
+      <ContextMenuHost />
+      <CommandPalette />
+      <ShareDialog />
+      <HelpModal />
+      <Onboard />
+    </div>
+  )
+}
