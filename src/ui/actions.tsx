@@ -10,7 +10,7 @@ import { setUI, toast, ui } from '../state/store'
 import { setPresence } from '../state/net'
 import { engine } from '../audio/engine'
 import { meta } from '../state/doc'
-import { DEFAULT_PROJECT, demoProject, DRUM_KITS, InstPreset, MidiLoop, Progression, progressionClip } from '../packs'
+import { DEFAULT_PROJECT, demoProject, DRUM_KITS, InstPreset, MidiLoop, Progression, progressionClip, clipInKey } from '../packs'
 
 export function selectTrack(trackId: string | null) {
   setUI({ selTrackId: trackId })
@@ -127,11 +127,13 @@ export function loadLoop(loop: MidiLoop, targetTrackId?: string, targetSceneId?:
     sceneId = sceneId ?? scenes.get(0)?.get('id')
   }
   if (!sceneId) return
+  // melodic loops follow the global key; drum loops are pitch-free
+  const built = loop.forDrums ? loop.clip : clipInKey(loop.clip, meta.get('root') ?? 9)
   mutate(`Loop: ${loop.name}`, () => {
-    clips.set(clipKey(trackId!, sceneId!), jsonToClipMap(loop.clip))
+    clips.set(clipKey(trackId!, sceneId!), jsonToClipMap(built))
   })
   selectClip({ kind: 'session', trackId: trackId!, sceneId }, true)
-  toast(`"${loop.name}" → ${trackById(trackId!)?.get('name')}`)
+  toast(`"${built.name}" → ${trackById(trackId!)?.get('name')}`)
 }
 
 /** Render a chord progression into the current project key and drop it in. */

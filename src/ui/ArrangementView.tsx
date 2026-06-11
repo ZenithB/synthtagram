@@ -17,7 +17,7 @@ import { openMenu, ColorRow, MenuItem, capturePointer } from './widgets'
 import { selectClip } from './actions'
 import { Icon } from './icons'
 import { peersList, subscribeAwareness, awarenessVersion } from '../state/net'
-import { MIDI_LOOPS, PROGRESSIONS, progressionClip } from '../packs'
+import { MIDI_LOOPS, PROGRESSIONS, progressionClip, clipInKey } from '../packs'
 import { loadLoop } from './actions'
 
 const LANE_H = 56
@@ -270,8 +270,9 @@ export function ArrangementView() {
               if (loopName) {
                 const loop = MIDI_LOOPS.find(l => l.name === loopName)
                 if (loop && tid) {
-                  addArrClip(tid, t, loop.clip, `Loop: ${loop.name}`)
-                  toast(`"${loop.name}" → arrangement`)
+                  const built = loop.forDrums ? loop.clip : clipInKey(loop.clip, meta.get('root') ?? 9)
+                  addArrClip(tid, t, built, `Loop: ${loop.name}`)
+                  toast(`"${built.name}" → arrangement`)
                 }
               } else if (progName) {
                 const prog = PROGRESSIONS.find(p => p.name === progName)

@@ -124,7 +124,9 @@ export function Browser() {
                     draggable
                     onDragStart={e => e.dataTransfer.setData('stg/loop', l.name)}
                     onDoubleClick={() => loadLoop(l)}
-                    data-info="Double-click: drop into a free slot · Drag onto any clip slot or the timeline"
+                    data-info={l.forDrums
+                      ? 'Double-click: drop into a free slot · Drag onto any clip slot or the timeline'
+                      : `Loads transposed to your key (${NOTE_NAMES[rootPc]}) — double-click for a free slot, or drag anywhere`}
                   >
                     <span className="bitem-icon"><Icon name={LOOP_ICONS[cat] ?? 'note'} size={12} /></span>{l.name}
                   </div>

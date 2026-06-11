@@ -462,6 +462,27 @@ export const MIDI_LOOPS: MidiLoop[] = [
 ]
 
 // =====================================================================
+// KEY-AWARE LOADING — melodic loops are authored in A; when loaded they
+// transpose to the project key by the smallest interval (±6 semitones max,
+// so basslines stay basslines instead of jumping an octave).
+// =====================================================================
+const AUTHORED_ROOT = 9 // A
+
+export function keyDelta(rootPc: number) {
+  return ((rootPc - AUTHORED_ROOT) % 12 + 18) % 12 - 6
+}
+
+export function clipInKey(c: ClipJSON, rootPc: number): ClipJSON {
+  const d = keyDelta(rootPc)
+  if (d === 0) return c
+  const notes: Record<string, Note> = {}
+  for (const [id, n] of Object.entries(c.notes)) {
+    notes[id] = { ...n, p: Math.min(127, Math.max(0, n.p + d)) }
+  }
+  return { ...c, name: `${c.name} (${NOTE_NAMES[rootPc]})`, notes }
+}
+
+// =====================================================================
 // CHORD PROGRESSIONS — generated into the project's key at load time
 // =====================================================================
 const CHORD_TYPES: Record<string, number[]> = {
