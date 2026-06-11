@@ -13,7 +13,7 @@ import {
 import { engine } from '../audio/engine'
 import { setUI, ui, useUI, toast } from '../state/store'
 import { useY, useRaf } from './hooks'
-import { openMenu, ColorRow, MenuItem } from './widgets'
+import { openMenu, ColorRow, MenuItem, capturePointer } from './widgets'
 import { selectClip } from './actions'
 import { peersList, subscribeAwareness, awarenessVersion } from '../state/net'
 import { MIDI_LOOPS } from '../packs'
@@ -98,14 +98,14 @@ export function ArrangementView() {
     selectClip({ kind: 'arr', id })
     const lane = laneOf(m.get('trackId'))
     setDrag({ type: 'move', id, startX: e.clientX, startY: e.clientY, origStart: m.get('start'), origLane: lane, dx: 0, dLane: 0, copy: e.altKey })
-    ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
+    capturePointer(e)
   }
   const beginResize = (e: React.PointerEvent, id: string) => {
     e.stopPropagation()
     const m = arr.get(id) as Y.Map<any>
     if (!m) return
     setDrag({ type: 'resize', id, startX: e.clientX, origLen: m.get('len'), dLen: 0 })
-    ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
+    capturePointer(e)
   }
   const onPointerMove = (e: React.PointerEvent) => {
     if (!drag) return
@@ -239,7 +239,7 @@ export function ArrangementView() {
                 const rel = (e.clientX - rect.left) / rect.width
                 const edge = rel < 0.18 ? 'start' : rel > 0.82 ? 'end' : 'mid'
                 setDrag({ type: 'loop', edge, startX: e.clientX, origStart: loopStart, origEnd: loopEnd, cur: [loopStart, loopEnd] })
-                ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
+                capturePointer(e)
               }}
             />
           </div>

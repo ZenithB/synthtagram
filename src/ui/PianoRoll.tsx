@@ -333,7 +333,7 @@ export function PianoRoll() {
   const onPointerDown = (e: React.PointerEvent) => {
     if (!clipMap || e.button === 2) return
     const loc = locate(e)
-    ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
+    try { (e.target as HTMLElement).setPointerCapture(e.pointerId) } catch { /* synthetic */ }
 
     if (loc.inKeys) {
       engine.previewOn(trackId, loc.pitch, 0.85)

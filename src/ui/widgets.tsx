@@ -6,6 +6,10 @@ import { ParamSpec } from '../audio/schema'
 import { clamp } from '../types'
 import { useRaf } from './hooks'
 
+export function capturePointer(e: React.PointerEvent) {
+  try { (e.target as HTMLElement).setPointerCapture(e.pointerId) } catch { /* synthetic events */ }
+}
+
 // ---------------- Knob ----------------
 
 function toNorm(v: number, s: ParamSpec) {
@@ -32,7 +36,7 @@ export function Knob({ spec, value, onChange, size = 36, accent }: {
 
   const onPointerDown = (e: React.PointerEvent) => {
     e.preventDefault()
-    ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
+    capturePointer(e)
     ref.current = { startY: e.clientY, startNorm: norm }
     setDrag(true)
   }
@@ -131,7 +135,7 @@ export function NumberDrag({ value, onChange, min, max, step = 1, suffix = '', i
       className={`numdrag ${drag ? 'dragging' : ''}`}
       data-info={info ?? 'Drag vertically to change'}
       onPointerDown={e => {
-        ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
+        capturePointer(e)
         ref.current = { y: e.clientY, v: value }
         setDrag(true)
       }}
