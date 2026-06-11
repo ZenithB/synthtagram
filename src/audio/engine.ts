@@ -30,6 +30,7 @@ type BuiltTrack = {
   partStartTicks: number
   partLoopTicks: number
   queuedKey: string | null
+  queuedPart: Tone.Part | null
   unobserve: (() => void) | null
 }
 
@@ -129,7 +130,7 @@ class Engine {
     const rec: BuiltTrack = {
       id: tid, kind: t.get('kind'), inst, fx, channel, meter,
       part: null, partKey: null, partStartTicks: 0, partLoopTicks: BAR,
-      queuedKey: null, unobserve: null,
+      queuedKey: null, queuedPart: null, unobserve: null,
     }
     this.built.set(tid, rec)
     return rec
@@ -231,7 +232,10 @@ class Engine {
       if (change.action === 'delete') {
         for (const rec of this.built.values()) {
           if (rec.partKey === key) this.stopTrackNow(rec)
-          if (rec.queuedKey === key) rec.queuedKey = null
+          if (rec.queuedKey === key) {
+            this.cancelQueued(rec)
+            rec.queuedKey = null
+          }
         }
         this.emit()
       }
@@ -322,11 +326,19 @@ class Engine {
     if (rec.part) {
       try { rec.part.stop(); rec.part.dispose() } catch { /* ok */ }
     }
+    this.cancelQueued(rec)
     rec.unobserve?.()
     rec.unobserve = null
     rec.part = null
     rec.partKey = null
     rec.queuedKey = null
+  }
+
+  private cancelQueued(rec: BuiltTrack) {
+    if (rec.queuedPart) {
+      try { rec.queuedPart.stop(); rec.queuedPart.dispose() } catch { /* ok */ }
+      rec.queuedPart = null
+    }
   }
 
   private startPartNow(tid: string, key: string) {
@@ -345,10 +357,18 @@ class Engine {
     this.observeClipForPart(rec, key, clipMap)
   }
 
-  private nextBoundary(): number {
+  /**
+   * Next launch boundary as a TRANSPORT TICK position. Everything is scheduled
+   * in ticks ("Ni" notation) — never wall-clock seconds — because the audio
+   * context clock and the transport timeline drift apart over a session, and
+   * mixing the two delays launches by exactly that drift.
+   */
+  private nextBoundaryTicks(): number {
     const q = meta.get('launchQ') ?? 1
-    if (q === 0 || this.transport.state !== 'started') return Tone.now() + 0.03
-    return this.transport.nextSubdivision(`${q}m`)
+    const cur = Math.round(this.transport.ticks)
+    if (q === 0) return cur + 4 // tiny lookahead ≈ immediate
+    const qTicks = q * BAR
+    return Math.ceil((cur + 1) / qTicks) * qTicks
   }
 
   ensureSessionMode() {
@@ -366,7 +386,7 @@ class Engine {
     const rec = this.built.get(trackId)
     const clipMap = clips.get(key) as Y.Map<any> | undefined
     if (!rec || !clipMap) return
-    if (rec.partKey === key && !rec.queuedKey) return
+    if (rec.partKey === key && !rec.queuedKey && !rec.queuedPart) return
 
     if (this.transport.state !== 'started') {
       this.transport.ticks = 0 as any
@@ -376,45 +396,48 @@ class Engine {
       return
     }
 
-    const at = this.nextBoundary()
+    // replace any pending launch on this track
+    this.cancelQueued(rec)
+    const atTicks = this.nextBoundaryTicks()
+    const atT = `${atTicks}i`
+    const newPart = this.makePart(rec, clipMap)
+    newPart.start(atT)
+    rec.queuedPart = newPart
     rec.queuedKey = key
-    this.transport.scheduleOnce(time => {
-      if (rec.queuedKey !== key) return
-      const old = rec.part
-      const oldUnobs = rec.unobserve
-      if (old) old.stop(time)
-      const clip = clips.get(key) as Y.Map<any> | undefined
-      if (!clip) { rec.queuedKey = null; return }
-      const part = this.makePart(rec, clip)
-      part.start(time)
-      rec.part = part
+    const old = rec.part
+    if (old) old.stop(atT)
+    this.transport.scheduleOnce(() => {
+      if (rec.queuedKey !== key || rec.queuedPart !== newPart) return
+      rec.unobserve?.()
+      rec.unobserve = null
+      rec.part = newPart
+      rec.queuedPart = null
       rec.partKey = key
       rec.queuedKey = null
-      rec.partStartTicks = this.transport.getTicksAtTime(time)
-      rec.partLoopTicks = clip.get('len') ?? BAR
-      oldUnobs?.()
-      rec.unobserve = null
-      this.observeClipForPart(rec, key, clip)
+      rec.partStartTicks = atTicks
+      rec.partLoopTicks = clipMap.get('len') ?? BAR
+      this.observeClipForPart(rec, key, clipMap)
       if (old) setTimeout(() => { try { old.dispose() } catch { /* ok */ } }, 500)
       this.emit()
-    }, at)
+    }, atT)
     this.emit()
   }
 
   async stopClip(trackId: string) {
     const rec = this.built.get(trackId)
-    if (!rec || (!rec.part && !rec.queuedKey)) return
+    if (!rec || (!rec.part && !rec.queuedKey && !rec.queuedPart)) return
     if (this.transport.state !== 'started') {
       this.stopTrackNow(rec)
       this.emit()
       return
     }
-    const at = this.nextBoundary()
+    this.cancelQueued(rec)
+    const atT = `${this.nextBoundaryTicks()}i`
     rec.queuedKey = STOP
-    this.transport.scheduleOnce(time => {
+    const old = rec.part
+    if (old) old.stop(atT)
+    this.transport.scheduleOnce(() => {
       if (rec.queuedKey !== STOP) return
-      const old = rec.part
-      if (old) old.stop(time)
       rec.unobserve?.()
       rec.unobserve = null
       rec.part = null
@@ -422,7 +445,7 @@ class Engine {
       rec.queuedKey = null
       if (old) setTimeout(() => { try { old.dispose() } catch { /* ok */ } }, 500)
       this.emit()
-    }, at)
+    }, atT)
     this.emit()
   }
 
