@@ -9,7 +9,8 @@ import {
 import { setUI, toast, ui } from '../state/store'
 import { setPresence } from '../state/net'
 import { engine } from '../audio/engine'
-import { DEFAULT_PROJECT, demoProject, DRUM_KITS, InstPreset, MidiLoop } from '../packs'
+import { meta } from '../state/doc'
+import { DEFAULT_PROJECT, demoProject, DRUM_KITS, InstPreset, MidiLoop, Progression, progressionClip } from '../packs'
 
 export function selectTrack(trackId: string | null) {
   setUI({ selTrackId: trackId })
@@ -131,6 +132,13 @@ export function loadLoop(loop: MidiLoop, targetTrackId?: string, targetSceneId?:
   })
   selectClip({ kind: 'session', trackId: trackId!, sceneId }, true)
   toast(`"${loop.name}" → ${trackById(trackId!)?.get('name')}`)
+}
+
+/** Render a chord progression into the current project key and drop it in. */
+export function loadProgression(prog: Progression, targetTrackId?: string, targetSceneId?: string) {
+  const rootPc = meta.get('root') ?? 9
+  const built = progressionClip(prog, rootPc)
+  loadLoop({ name: built.name, cat: 'Chords', clip: built }, targetTrackId, targetSceneId)
 }
 
 // ---------------- project-level ----------------

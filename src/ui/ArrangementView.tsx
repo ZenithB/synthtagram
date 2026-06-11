@@ -16,7 +16,7 @@ import { useY, useRaf } from './hooks'
 import { openMenu, ColorRow, MenuItem, capturePointer } from './widgets'
 import { selectClip } from './actions'
 import { peersList, subscribeAwareness, awarenessVersion } from '../state/net'
-import { MIDI_LOOPS } from '../packs'
+import { MIDI_LOOPS, PROGRESSIONS, progressionClip } from '../packs'
 import { loadLoop } from './actions'
 
 const LANE_H = 56
@@ -260,6 +260,7 @@ export function ArrangementView() {
             onDragOver={e => e.preventDefault()}
             onDrop={e => {
               const loopName = e.dataTransfer.getData('stg/loop')
+              const progName = e.dataTransfer.getData('stg/prog')
               const clipSrc = e.dataTransfer.getData('stg/clip')
               const rect = e.currentTarget.getBoundingClientRect()
               const t = Math.max(0, snap((e.clientX - rect.left) / pxPerTick, false))
@@ -270,6 +271,13 @@ export function ArrangementView() {
                 if (loop && tid) {
                   addArrClip(tid, t, loop.clip, `Loop: ${loop.name}`)
                   toast(`"${loop.name}" → arrangement`)
+                }
+              } else if (progName) {
+                const prog = PROGRESSIONS.find(p => p.name === progName)
+                if (prog && tid) {
+                  const built = progressionClip(prog, meta.get('root') ?? 9)
+                  addArrClip(tid, t, built, `Chords: ${prog.name}`)
+                  toast(`"${prog.name}" → arrangement`)
                 }
               } else if (clipSrc) {
                 const [srcT, srcS] = clipSrc.split('|')

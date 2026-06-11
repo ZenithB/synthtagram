@@ -587,6 +587,18 @@ class Engine {
     addNote(pending.clipMap, { p, s: pending.startInClip, d: dur, v: pending.vel, pr: 1 }, 'Record note')
   }
 
+  /** Audition arbitrary pitches (e.g. a chord progression preview). */
+  async auditionPitches(type: string, params: Record<string, number>, chords: number[][], chordDur = 0.55) {
+    await this.ensureStarted()
+    const inst = makeInstrument(type, params)
+    inst.out.connect(this.master)
+    const now = Tone.now()
+    chords.forEach((chord, i) => {
+      chord.forEach(p => inst.trigger(p, chordDur * 0.92, now + i * chordDur, 0.75))
+    })
+    setTimeout(() => { try { inst.dispose() } catch { /* ok */ } }, (chords.length * chordDur + 2) * 1000)
+  }
+
   /** Quick preset audition from the browser, without touching any track. */
   async audition(type: string, params: Record<string, number>) {
     await this.ensureStarted()

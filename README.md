@@ -15,9 +15,10 @@ No install, no account, no server. Your project autosaves locally; sharing creat
 - **Arrangement View** — a linear timeline. Drag clips around (Alt = copy), resize, set a loop region, and send clips/scenes over from the Session grid when the jam is ready to become a song.
 - **Piano roll** — canvas editor with draw mode (`B`), marquee select, drag/resize/copy, per-note **velocity** and **probability** lanes, scale highlighting, snap-to-scale, and fold-to-scale.
 - **Mixer** — per-track fader, pan, mute, solo, arm, live meters, master limiter.
-- **6 instrument modules** — Analog Poly, FM Synth, Mono Bass, Pluck, Dream Keys, and an 8-pad synthesized Drum Kit (no samples — every drum is synthesized live, with per-pad tune/decay/level).
-- **9 effect modules** — EQ3, Filter, tempo-synced Echo, Reverb, Chorus, Drive, Bitcrusher, Compressor, Phaser. Reorder, bypass, stack freely per track.
-- **Sound packs** — searchable browser of instrument presets, drum kits and MIDI loops (click to audition, drag onto the grid), plus a full demo song.
+- **7 instrument modules** — Analog Poly (with fat/supersaw waves + stereo spread), FM Synth, Mono Bass, Pluck, Dream Keys, Duo Thick (detuned dual-voice with vibrato), and an 8-pad synthesized Drum Kit (no samples — every drum is synthesized live, with per-pad tune/decay/level).
+- **17 effect modules** — EQ3, Filter, tempo-synced Echo & Ping Pong, Reverb, Chorus, Drive, Heat (Chebyshev), Bitcrusher, Compressor, Phaser, Auto Filter, Auto Pan, Tremolo, Vibrato, Stereo Widener, Frequency Shifter. Reorder, bypass, stack freely per track.
+- **Sound packs** — a searchable browser with **~50 instrument presets** (supersaw anthems to gamelan bells), **12 drum kits** (808 Boom, Trap 808 Long, Techno Bunker, Garage 2-Step, Ambient Glass…), **40 MIDI loops** across drums/bass/chords/melody/arps (click to audition, drag onto the grid), plus a full demo song.
+- **Chord progression generator** — 16 classic progressions (Axis pop, Doo-Wop, Royal Road, 12-bar blues, Andalusian, jazz ii–V–I, neo-soul vamps…) rendered **into your project's key** on drop, with roman-numeral labels and one-click audition.
 - **Export** — render your arrangement, loop region, or a scene to WAV entirely in the browser; export per-track **stems**; save/import project files.
 
 ### Collaboration ("Google Docs, but it slaps")

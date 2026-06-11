@@ -2,11 +2,13 @@
 // click (or drag onto a track/slot) loads. Loops carry real MIDI patterns.
 
 import React, { useState } from 'react'
-import { INST_PRESETS, DRUM_KITS, MIDI_LOOPS } from '../packs'
+import { INST_PRESETS, DRUM_KITS, MIDI_LOOPS, PROGRESSIONS, progressionPitches } from '../packs'
 import { engine } from '../audio/engine'
-import { applyPreset, applyDrumKit, loadLoop, loadDemo, newProject, importProjectFile } from './actions'
+import { applyPreset, applyDrumKit, loadLoop, loadProgression, loadDemo, newProject, importProjectFile } from './actions'
 import { exportProjectFile } from '../audio/render'
-import { setUI, useUI } from '../state/store'
+import { meta } from '../state/doc'
+import { useY } from './hooks'
+import { NOTE_NAMES } from '../theory'
 
 function Section({ title, children, defaultOpen = true }: { title: string; children: React.ReactNode; defaultOpen?: boolean }) {
   const [open, setOpen] = useState(defaultOpen)
@@ -22,14 +24,19 @@ function Section({ title, children, defaultOpen = true }: { title: string; child
 
 export function Browser() {
   const [q, setQ] = useState('')
+  useY(meta)
   const query = q.toLowerCase()
   const match = (s: string) => !query || s.toLowerCase().includes(query)
 
   const presets = INST_PRESETS.filter(p => match(`${p.name} ${p.cat}`))
   const kits = DRUM_KITS.filter(k => match(k.name))
   const loops = MIDI_LOOPS.filter(l => match(`${l.name} ${l.cat}`))
+  const progs = PROGRESSIONS.filter(p => match(`${p.name} ${p.numerals} ${p.mode} chords progression`))
 
   const cats = [...new Set(presets.map(p => p.cat))]
+  const loopCats = [...new Set(loops.map(l => l.cat))]
+  const rootPc = meta.get('root') ?? 9
+  const auditionInst = INST_PRESETS.find(p => p.name === 'Dream Keys')!
 
   return (
     <div className="browser">
@@ -79,8 +86,26 @@ export function Browser() {
           ))}
         </Section>
 
+        <Section title="Chord Progressions">
+          <div className="bcat">In your key: {NOTE_NAMES[rootPc]}</div>
+          {progs.map(p => (
+            <div
+              key={p.name}
+              className="bitem"
+              draggable
+              onDragStart={e => e.dataTransfer.setData('stg/prog', p.name)}
+              onClick={() => engine.auditionPitches(auditionInst.type, auditionInst.params, p.chords.slice(0, 4).map(c => progressionPitches(rootPc, c)))}
+              onDoubleClick={() => loadProgression(p)}
+              data-info={`${p.numerals} (${p.mode}) — click: hear it in ${NOTE_NAMES[rootPc]} · double-click: drop into a slot · drag anywhere`}
+            >
+              <span className="bitem-icon">{p.mode === 'major' ? '🌞' : '🌙'}</span>{p.name}
+              <span className="bitem-sub">{p.numerals}</span>
+            </div>
+          ))}
+        </Section>
+
         <Section title="MIDI Loops">
-          {(['Drums', 'Bass', 'Chords', 'Melody'] as const).map(cat => {
+          {loopCats.map(cat => {
             const items = loops.filter(l => l.cat === cat)
             if (!items.length) return null
             return (

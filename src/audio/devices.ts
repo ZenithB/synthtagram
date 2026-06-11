@@ -27,9 +27,15 @@ const midiHz = (p: number) => Tone.Frequency(p, 'midi').toFrequency()
 // ---------------- instruments ----------------
 
 function makePoly(p: Record<string, number>): Inst {
+  let wave = p.wave | 0
+  let spread = p.spread ?? 18
+  const oscOpts = () => {
+    const type = WAVES[wave] as any
+    return type.startsWith('fat') ? { type, spread, count: 3 } : { type }
+  }
   const synth = new Tone.PolySynth(Tone.Synth, {
     maxPolyphony: 16,
-    oscillator: { type: WAVES[p.wave | 0] as any },
+    oscillator: oscOpts(),
     envelope: { attack: p.attack, decay: p.decay, sustain: p.sustain, release: p.release },
   } as any)
   const filt = new Tone.Filter(p.cutoff, 'lowpass')
@@ -38,7 +44,8 @@ function makePoly(p: Record<string, number>): Inst {
   return {
     out: filt,
     set: (k, v) => {
-      if (k === 'wave') synth.set({ oscillator: { type: WAVES[v | 0] as any } })
+      if (k === 'wave') { wave = v | 0; synth.set({ oscillator: oscOpts() } as any) }
+      else if (k === 'spread') { spread = v; if (WAVES[wave].startsWith('fat')) synth.set({ oscillator: { spread: v } } as any) }
       else if (k === 'cutoff') filt.frequency.rampTo(v, 0.03)
       else if (k === 'res') filt.Q.value = v
       else synth.set({ envelope: { [k]: v } } as any)
@@ -47,6 +54,30 @@ function makePoly(p: Record<string, number>): Inst {
     noteOff: pp => synth.triggerRelease(midiHz(pp)),
     trigger: (pp, dur, time, vel) => synth.triggerAttackRelease(midiHz(pp), dur, time, vel),
     dispose: () => { synth.dispose(); filt.dispose() },
+  }
+}
+
+function makeDuo(p: Record<string, number>): Inst {
+  const synth = new Tone.PolySynth(Tone.DuoSynth as any, {
+    maxPolyphony: 6,
+    harmonicity: p.harm,
+    vibratoAmount: p.vibAmt,
+    vibratoRate: p.vibRate,
+    voice0: { envelope: { attack: p.attack, decay: p.decay, sustain: p.sustain, release: p.release } },
+    voice1: { envelope: { attack: p.attack, decay: p.decay, sustain: p.sustain, release: p.release } },
+  } as any)
+  return {
+    out: synth as any,
+    set: (k, v) => {
+      if (k === 'harm') synth.set({ harmonicity: v } as any)
+      else if (k === 'vibAmt') synth.set({ vibratoAmount: v } as any)
+      else if (k === 'vibRate') synth.set({ vibratoRate: v } as any)
+      else synth.set({ voice0: { envelope: { [k]: v } }, voice1: { envelope: { [k]: v } } } as any)
+    },
+    noteOn: (pp, vel) => (synth as any).triggerAttack(midiHz(pp), undefined, vel),
+    noteOff: pp => (synth as any).triggerRelease(midiHz(pp)),
+    trigger: (pp, dur, time, vel) => (synth as any).triggerAttackRelease(midiHz(pp), dur, time, vel),
+    dispose: () => synth.dispose(),
   }
 }
 
@@ -251,6 +282,7 @@ export function makeInstrument(type: string, params: Record<string, number>): In
     case 'mono': return makeMono(params)
     case 'pluck': return makePluck(params)
     case 'keys': return makeKeys(params)
+    case 'duo': return makeDuo(params)
     case 'drum': return makeDrum(params)
     default: return makePoly(params)
   }
@@ -371,6 +403,97 @@ export function makeEffect(type: string, p: Record<string, number>): Fx {
         set: (k, v) => {
           if (k === 'rate') node.frequency.value = v
           else if (k === 'octaves') node.octaves = v | 0
+          else node.wet.value = v
+        },
+        dispose: () => node.dispose(),
+      }
+    }
+    case 'pingpong': {
+      const node = new Tone.PingPongDelay({ delayTime: delaySeconds(p.time), feedback: p.fb, wet: p.mix, maxDelay: 4 })
+      return {
+        node,
+        set: (k, v) => {
+          if (k === 'time') node.delayTime.rampTo(delaySeconds(v), 0.05)
+          else if (k === 'fb') node.feedback.value = Math.min(0.9, v)
+          else node.wet.value = v
+        },
+        dispose: () => node.dispose(),
+      }
+    }
+    case 'autofilt': {
+      const node = new Tone.AutoFilter({ frequency: p.rate, depth: p.depth, baseFrequency: p.base, wet: p.mix, octaves: 3.5 }).start()
+      return {
+        node,
+        set: (k, v) => {
+          if (k === 'rate') node.frequency.value = v
+          else if (k === 'depth') node.depth.value = v
+          else if (k === 'base') node.baseFrequency = v
+          else node.wet.value = v
+        },
+        dispose: () => node.dispose(),
+      }
+    }
+    case 'trem': {
+      const node = new Tone.Tremolo({ frequency: p.rate, depth: p.depth, wet: p.mix, spread: 60 }).start()
+      return {
+        node,
+        set: (k, v) => {
+          if (k === 'rate') node.frequency.value = v
+          else if (k === 'depth') node.depth.value = v
+          else node.wet.value = v
+        },
+        dispose: () => node.dispose(),
+      }
+    }
+    case 'autopan': {
+      const node = new Tone.AutoPanner({ frequency: p.rate, depth: p.depth }).start()
+      return {
+        node,
+        set: (k, v) => {
+          if (k === 'rate') node.frequency.value = v
+          else node.depth.value = v
+        },
+        dispose: () => node.dispose(),
+      }
+    }
+    case 'vib': {
+      const node = new Tone.Vibrato({ frequency: p.rate, depth: p.depth, wet: p.mix })
+      return {
+        node,
+        set: (k, v) => {
+          if (k === 'rate') node.frequency.value = v
+          else if (k === 'depth') node.depth.value = v
+          else node.wet.value = v
+        },
+        dispose: () => node.dispose(),
+      }
+    }
+    case 'cheby': {
+      const node = new Tone.Chebyshev({ order: Math.max(1, p.order | 0), wet: p.mix })
+      try { (node as any).oversample = '4x' } catch { /* optional */ }
+      return {
+        node,
+        set: (k, v) => {
+          if (k === 'order') node.order = Math.max(1, v | 0)
+          else node.wet.value = v
+        },
+        dispose: () => node.dispose(),
+      }
+    }
+    case 'widen': {
+      const node = new Tone.StereoWidener(p.width)
+      return {
+        node,
+        set: (_k, v) => { node.width.value = v },
+        dispose: () => node.dispose(),
+      }
+    }
+    case 'shift': {
+      const node = new Tone.FrequencyShifter({ frequency: p.amt, wet: p.mix })
+      return {
+        node,
+        set: (k, v) => {
+          if (k === 'amt') node.frequency.value = v
           else node.wet.value = v
         },
         dispose: () => node.dispose(),

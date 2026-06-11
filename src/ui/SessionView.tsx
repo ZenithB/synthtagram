@@ -17,9 +17,9 @@ import { Fader, MeterBar, Knob, openMenu, ColorRow, MenuItem } from './widgets'
 import { peersList, subscribeAwareness, awarenessVersion, setPresence } from '../state/net'
 import {
   selectClip, selectTrack, copyClipRef, pasteClipTo, hasClipboard,
-  addSynthTrack, addDrumTrack, duplicateClipToNextScene, loadLoop,
+  addSynthTrack, addDrumTrack, duplicateClipToNextScene, loadLoop, loadProgression,
 } from './actions'
-import { MIDI_LOOPS, INST_PRESETS, DRUM_KITS } from '../packs'
+import { MIDI_LOOPS, INST_PRESETS, DRUM_KITS, PROGRESSIONS } from '../packs'
 import { applyPreset, applyDrumKit } from './actions'
 
 const PAN_SPEC = { key: 'pan', label: 'Pan', min: -1, max: 1, def: 0, fmt: (v: number) => (Math.abs(v) < 0.02 ? 'C' : v < 0 ? `${Math.round(-v * 50)}L` : `${Math.round(v * 50)}R`) }
@@ -79,6 +79,7 @@ function ClipSlot({ track, sceneId }: { track: Y.Map<any>; sceneId: string }) {
     e.preventDefault()
     const clipSrc = e.dataTransfer.getData('stg/clip')
     const loopName = e.dataTransfer.getData('stg/loop')
+    const progName = e.dataTransfer.getData('stg/prog')
     if (clipSrc && clipSrc !== key) {
       const [srcT, srcS] = clipSrc.split('|')
       duplicateClipTo({ kind: 'session', trackId: srcT, sceneId: srcS }, trackId, sceneId)
@@ -87,6 +88,9 @@ function ClipSlot({ track, sceneId }: { track: Y.Map<any>; sceneId: string }) {
     } else if (loopName) {
       const loop = MIDI_LOOPS.find(l => l.name === loopName)
       if (loop) loadLoop(loop, trackId, sceneId)
+    } else if (progName) {
+      const prog = PROGRESSIONS.find(p => p.name === progName)
+      if (prog) loadProgression(prog, trackId, sceneId)
     }
   }
 

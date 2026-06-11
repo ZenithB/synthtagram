@@ -168,6 +168,7 @@ button { cursor: pointer; background: none; border: none; }
 .bitem:hover { background: var(--bg2); }
 .bitem:active { cursor: grabbing; }
 .bitem-icon { margin-right: 6px; font-size: 11px; }
+.bitem-sub { float: right; color: var(--dim); font-size: 9px; margin-left: 6px; max-width: 80px; overflow: hidden; text-overflow: ellipsis; }
 .bbtn {
   display: block; width: calc(100% - 24px); margin: 5px 12px; text-align: left;
   background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 7px 10px; color: var(--text);

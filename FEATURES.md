@@ -23,6 +23,12 @@ Real-time collaboration is the most-wished "someday" feature across every DAW co
 | 11 | **In-app guidance instead of manuals** | Live's Info View is its most-copied teaching idea | Hover-help status bar on every control + built-in help overlay |
 | 12 | **Hover help, stable layout, no modals** | [MusicRadar 20-years retrospective](https://www.musicradar.com/news/story-of-ableton-live-at-20) | Single window, bottom detail panel, popups only for share/help |
 
+## Content library
+
+- ~50 instrument presets across Lead / Pad / Keys / Bass / Pluck / Bell, 12 synthesized drum kits, 40 MIDI loops (drums, bass, chords, melodies, arps).
+- A **key-aware chord progression generator**: 16 named progressions (with roman numerals) that render into whatever key/scale the project is set to — a "chord track"-style helper users have long asked DAWs for.
+- 7 instruments + 17 effects, all schema-driven so every one works identically in the live engine, the preset system and the offline renderer.
+
 ## Quality-of-life defaults
 
 - Launch quantize is editable (None / 1 / 2 / 4 bars) and shown in the top bar — the #1 "why does my clip start late" confusion, made visible.

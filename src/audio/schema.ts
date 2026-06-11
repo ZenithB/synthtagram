@@ -28,8 +28,8 @@ const adsr = (a: number, d: number, s: number, r: number): ParamSpec[] => [
   { key: 'release', label: 'Release', min: 0.01, max: 4, def: r, exp: true, fmt: fmtSec },
 ]
 
-export const WAVES = ['sawtooth', 'square', 'triangle', 'sine']
-const WAVE_LABELS = ['Saw', 'Sqr', 'Tri', 'Sin']
+export const WAVES = ['sawtooth', 'square', 'triangle', 'sine', 'fatsawtooth', 'fatsquare', 'fattriangle']
+const WAVE_LABELS = ['Saw', 'Sqr', 'Tri', 'Sin', 'FatSaw', 'FatSqr', 'FatTri']
 
 export const DELAY_DIVS = ['1/32', '1/16', '1/8', '3/16', '1/4', '1/2']
 export const DELAY_FRACTIONS = [1 / 32, 1 / 16, 1 / 8, 3 / 16, 1 / 4, 1 / 2] // of a whole note
@@ -56,10 +56,20 @@ export const INSTRUMENTS: InstrumentSchema[] = [
   {
     type: 'poly', label: 'Analog Poly', icon: '〰️',
     params: [
-      { key: 'wave', label: 'Wave', min: 0, max: 3, def: 0, int: true, steps: WAVE_LABELS },
+      { key: 'wave', label: 'Wave', min: 0, max: WAVE_LABELS.length - 1, def: 0, int: true, steps: WAVE_LABELS },
+      { key: 'spread', label: 'Spread', min: 0, max: 60, def: 18, fmt: v => `${Math.round(v)}ct` },
       { key: 'cutoff', label: 'Cutoff', min: 80, max: 14000, def: 7000, exp: true, fmt: fmtHz },
       { key: 'res', label: 'Res', min: 0, max: 10, def: 0.7, fmt: v => v.toFixed(1) },
       ...adsr(0.01, 0.15, 0.6, 0.4),
+    ],
+  },
+  {
+    type: 'duo', label: 'Duo Thick', icon: '👯',
+    params: [
+      { key: 'harm', label: 'Interval', min: 0.5, max: 3, def: 1.5, fmt: fmtX },
+      { key: 'vibAmt', label: 'Vibrato', min: 0, max: 0.6, def: 0.12, fmt: fmtPct },
+      { key: 'vibRate', label: 'Vib Rate', min: 0.5, max: 10, def: 4.5, exp: true, fmt: v => `${v.toFixed(1)}Hz` },
+      ...adsr(0.02, 0.3, 0.6, 0.6),
     ],
   },
   {
@@ -170,6 +180,66 @@ export const EFFECTS: EffectSchema[] = [
       { key: 'rate', label: 'Rate', min: 0.05, max: 8, def: 0.8, exp: true, fmt: v => `${v.toFixed(2)}Hz` },
       { key: 'octaves', label: 'Sweep', min: 1, max: 6, def: 3, int: true, fmt: v => `${Math.round(v)}oct` },
       { key: 'mix', label: 'Mix', min: 0, max: 1, def: 0.5, fmt: fmtPct },
+    ],
+  },
+  {
+    type: 'pingpong', label: 'Ping Pong', icon: '🏓',
+    params: [
+      { key: 'time', label: 'Time', min: 0, max: DELAY_DIVS.length - 1, def: 2, int: true, steps: DELAY_DIVS },
+      { key: 'fb', label: 'Feedback', min: 0, max: 0.85, def: 0.4, fmt: fmtPct },
+      { key: 'mix', label: 'Mix', min: 0, max: 1, def: 0.3, fmt: fmtPct },
+    ],
+  },
+  {
+    type: 'autofilt', label: 'Auto Filter', icon: '🎢',
+    params: [
+      { key: 'rate', label: 'Rate', min: 0.05, max: 8, def: 1, exp: true, fmt: v => `${v.toFixed(2)}Hz` },
+      { key: 'depth', label: 'Depth', min: 0, max: 1, def: 0.7, fmt: fmtPct },
+      { key: 'base', label: 'Base', min: 80, max: 4000, def: 350, exp: true, fmt: fmtHz },
+      { key: 'mix', label: 'Mix', min: 0, max: 1, def: 1, fmt: fmtPct },
+    ],
+  },
+  {
+    type: 'trem', label: 'Tremolo', icon: '🫨',
+    params: [
+      { key: 'rate', label: 'Rate', min: 0.5, max: 16, def: 5, exp: true, fmt: v => `${v.toFixed(1)}Hz` },
+      { key: 'depth', label: 'Depth', min: 0, max: 1, def: 0.6, fmt: fmtPct },
+      { key: 'mix', label: 'Mix', min: 0, max: 1, def: 1, fmt: fmtPct },
+    ],
+  },
+  {
+    type: 'autopan', label: 'Auto Pan', icon: '↔️',
+    params: [
+      { key: 'rate', label: 'Rate', min: 0.1, max: 10, def: 1.5, exp: true, fmt: v => `${v.toFixed(1)}Hz` },
+      { key: 'depth', label: 'Depth', min: 0, max: 1, def: 0.8, fmt: fmtPct },
+    ],
+  },
+  {
+    type: 'vib', label: 'Vibrato', icon: '🎻',
+    params: [
+      { key: 'rate', label: 'Rate', min: 0.5, max: 12, def: 5, exp: true, fmt: v => `${v.toFixed(1)}Hz` },
+      { key: 'depth', label: 'Depth', min: 0, max: 0.6, def: 0.15, fmt: fmtPct },
+      { key: 'mix', label: 'Mix', min: 0, max: 1, def: 1, fmt: fmtPct },
+    ],
+  },
+  {
+    type: 'cheby', label: 'Heat', icon: '🌶️',
+    params: [
+      { key: 'order', label: 'Order', min: 2, max: 14, def: 3, int: true, fmt: v => `${Math.round(v)}` },
+      { key: 'mix', label: 'Mix', min: 0, max: 1, def: 0.35, fmt: fmtPct },
+    ],
+  },
+  {
+    type: 'widen', label: 'Widener', icon: '🦅',
+    params: [
+      { key: 'width', label: 'Width', min: 0, max: 1, def: 0.8, fmt: fmtPct },
+    ],
+  },
+  {
+    type: 'shift', label: 'Freq Shift', icon: '👽',
+    params: [
+      { key: 'amt', label: 'Shift', min: -400, max: 400, def: 60, fmt: v => `${Math.round(v)}Hz` },
+      { key: 'mix', label: 'Mix', min: 0, max: 1, def: 0.4, fmt: fmtPct },
     ],
   },
 ]
