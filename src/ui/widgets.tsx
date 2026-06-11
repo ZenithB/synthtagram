@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom'
 import { ParamSpec } from '../audio/schema'
 import { clamp } from '../types'
 import { useRaf } from './hooks'
+import { Icon } from './icons'
 
 export function capturePointer(e: React.PointerEvent) {
   try { (e.target as HTMLElement).setPointerCapture(e.pointerId) } catch { /* synthetic events */ }
@@ -170,7 +171,7 @@ export function Modal({ title, onClose, children, width = 440 }: {
       <div className="modal" style={{ width }}>
         <div className="modal-head">
           <span>{title}</span>
-          <button className="icon-btn" onClick={onClose}>✕</button>
+          <button className="icon-btn" onClick={onClose}><Icon name="close" /></button>
         </div>
         <div className="modal-body">{children}</div>
       </div>
@@ -182,7 +183,7 @@ export function Modal({ title, onClose, children, width = 440 }: {
 // ---------------- Context menu ----------------
 
 export type MenuItem =
-  | { label: string; fn: () => void; danger?: boolean; disabled?: boolean }
+  | { label: React.ReactNode; fn: () => void; danger?: boolean; disabled?: boolean }
   | { custom: React.ReactNode }
   | 'sep'
 

@@ -1,6 +1,6 @@
 // Top bar: transport, tempo/swing/key, view switch, undo, export, share, presence.
 
-import React, { useRef, useSyncExternalStore } from 'react'
+import React, { useRef, useState, useSyncExternalStore } from 'react'
 import { LAUNCH_Q_OPTIONS } from '../types'
 import { meta, setBpm, setSwing, setTitle, setKeyScale, setLaunchQ } from '../state/doc'
 import { undoMgr } from '../state/undo'
@@ -8,6 +8,7 @@ import { engine } from '../audio/engine'
 import { setUI, ui, useUI } from '../state/store'
 import { useY, useRaf } from './hooks'
 import { NumberDrag, Knob, openMenu } from './widgets'
+import { Icon } from './icons'
 import { NOTE_NAMES, SCALES } from '../theory'
 import { exportWav, exportProjectFile } from '../audio/render'
 import { importProjectFile } from './actions'
@@ -24,7 +25,8 @@ function PlayButton() {
   })
   return (
     <button ref={ref} className="transport-btn play" data-info="Play / Stop (Space)" onClick={() => engine.togglePlay()}>
-      <span className="ico-play">▶</span><span className="ico-stop">■</span>
+      <span className="ico-play"><Icon name="play" /></span>
+      <span className="ico-stop"><Icon name="stop" /></span>
     </button>
   )
 }
@@ -60,6 +62,7 @@ export function Topbar() {
   const theme = useUI(s => s.theme)
   const chatUnread = useUI(s => s.chatUnread)
   const taps = useRef<number[]>([])
+  const [kbdOn, setKbdOn] = useState(isKbdEnabled())
 
   const tap = () => {
     const now = performance.now()
@@ -75,19 +78,19 @@ export function Topbar() {
   const exportMenu = (e: React.MouseEvent) => {
     const sceneId = ui.selClip?.kind === 'session' ? ui.selClip.sceneId : null
     openMenu(e, [
-      { label: '🎧 Export WAV — arrangement', fn: () => exportWav({ kind: 'arr' }) },
-      { label: '🔁 Export WAV — loop region', fn: () => exportWav({ kind: 'loop' }) },
-      { label: '🎬 Export WAV — selected scene (2 loops)', fn: () => sceneId ? exportWav({ kind: 'scene', sceneId }) : void 0, disabled: !sceneId },
-      { label: '🥞 Export stems — arrangement (one WAV per track)', fn: () => exportWav({ kind: 'arr' }, true) },
+      { label: <><Icon name="download" /> Export WAV — arrangement</>, fn: () => exportWav({ kind: 'arr' }) },
+      { label: <><Icon name="loop" /> Export WAV — loop region</>, fn: () => exportWav({ kind: 'loop' }) },
+      { label: <><Icon name="play" /> Export WAV — selected scene (2 loops)</>, fn: () => sceneId ? exportWav({ kind: 'scene', sceneId }) : void 0, disabled: !sceneId },
+      { label: <><Icon name="chord" /> Export stems — one WAV per track</>, fn: () => exportWav({ kind: 'arr' }, true) },
       'sep',
-      { label: '💾 Save project file', fn: exportProjectFile },
-      { label: '📂 Import project file', fn: importProjectFile },
+      { label: <><Icon name="save" /> Save project file</>, fn: exportProjectFile },
+      { label: <><Icon name="folder" /> Import project file</>, fn: importProjectFile },
     ])
   }
 
   return (
     <div className="topbar">
-      <div className="brand" data-info="Synthtagram — make a song together">🎛️<b>Synthtagram</b></div>
+      <div className="brand" data-info="Synthtagram — make a song together"><Icon name="logo" size={18} /><b>Synthtagram</b></div>
       <input
         className="title-input"
         value={meta.get('title') ?? ''}
@@ -101,11 +104,11 @@ export function Topbar() {
           className={`transport-btn rec ${recording ? 'on' : ''}`}
           data-info="Record: notes you play go into the armed track's playing clip"
           onClick={() => setUI({ recording: !recording })}
-        >⏺</button>
-        <button className="transport-btn" data-info="Capture the last 30s you played into a clip — even though you weren't recording ✨"
-          onClick={() => captureToClip()}>CAP</button>
+        ><Icon name="rec" /></button>
+        <button className="transport-btn" data-info="Capture the last 30s you played into a clip — even though you weren't recording"
+          onClick={() => captureToClip()}><Icon name="capture" /></button>
         <button className={`transport-btn ${metronome ? 'on' : ''}`} data-info="Metronome (M)"
-          onClick={() => setUI({ metronome: !metronome })}>🜛</button>
+          onClick={() => setUI({ metronome: !metronome })}><Icon name="metro" /></button>
         <Position />
       </div>
 
@@ -141,26 +144,26 @@ export function Topbar() {
       <div className="spacer" />
 
       <div className="tgroup">
-        <button className="icon-btn" data-info="Undo your last edit (Ctrl/Cmd+Z) — only undoes YOUR changes" onClick={() => undoMgr.undo()}>↶</button>
-        <button className="icon-btn" data-info="Redo (Ctrl/Cmd+Shift+Z)" onClick={() => undoMgr.redo()}>↷</button>
-        <button className="icon-btn" data-info="Undo history — see & rewind your edits" onClick={() => setUI({ historyOpen: !ui.historyOpen })}>🕘</button>
+        <button className="icon-btn" data-info="Undo your last edit (Ctrl/Cmd+Z) — only undoes YOUR changes" onClick={() => undoMgr.undo()}><Icon name="undo" /></button>
+        <button className="icon-btn" data-info="Redo (Ctrl/Cmd+Shift+Z)" onClick={() => undoMgr.redo()}><Icon name="redo" /></button>
+        <button className="icon-btn" data-info="Undo history — see & rewind your edits" onClick={() => setUI({ historyOpen: !ui.historyOpen })}><Icon name="clock" /></button>
         <button className="icon-btn" data-info="Command palette (Ctrl/Cmd+K)" onClick={() => setUI({ paletteOpen: true })}>⌘K</button>
-        <button className={`icon-btn ${isKbdEnabled() ? 'lit' : ''}`} data-info="Computer-keyboard piano on/off (A–K play notes, Z/X octave)"
-          onClick={e => { setKbdEnabled(!isKbdEnabled()); (e.target as HTMLElement).classList.toggle('lit') }}>🎹</button>
-        <button className="icon-btn" data-info="Export audio & project" onClick={exportMenu}>⬇</button>
+        <button className={`icon-btn ${kbdOn ? 'lit' : ''}`} data-info="Computer-keyboard piano on/off (A–K play notes, Z/X octave)"
+          onClick={() => { setKbdEnabled(!isKbdEnabled()); setKbdOn(isKbdEnabled()) }}><Icon name="keys" /></button>
+        <button className="icon-btn" data-info="Export audio & project" onClick={exportMenu}><Icon name="download" /></button>
         <button className="icon-btn" data-info="Toggle light/dark theme" onClick={() => setUI({ theme: theme === 'dark' ? 'light' : 'dark' })}>
-          {theme === 'dark' ? '☀' : '🌙'}
+          <Icon name={theme === 'dark' ? 'sun' : 'moon'} />
         </button>
         <button className="icon-btn" data-info="Help & shortcuts (?)" onClick={() => setUI({ helpOpen: true })}>?</button>
       </div>
 
       <div className="tgroup">
         <button className="share-btn" data-info="Invite friends — everyone edits the same project live" onClick={() => setUI({ shareOpen: true })}>
-          🔗 Share
+          <Icon name="link" /> Share
         </button>
         <Avatars />
         <button className="icon-btn chat-toggle" data-info="Chat with your collaborators" onClick={() => setUI({ chatOpen: !ui.chatOpen, chatUnread: 0 })}>
-          💬{chatUnread > 0 && <span className="badge">{chatUnread}</span>}
+          <Icon name="chat" />{chatUnread > 0 && <span className="badge">{chatUnread}</span>}
         </button>
       </div>
     </div>

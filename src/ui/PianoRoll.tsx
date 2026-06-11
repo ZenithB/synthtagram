@@ -14,6 +14,7 @@ import { inScale, snapToScale, midiName, getScale } from '../theory'
 import * as tools from '../noteTools'
 import { engine } from '../audio/engine'
 import { clips, clipKey } from '../state/doc'
+import { Icon } from './icons'
 
 const KEY_W = 48
 const LANE_H = 64
@@ -545,7 +546,7 @@ export function PianoRoll() {
   }, [clipMap, gridTicks, snapScale, isDrum, root, scaleId])
 
   if (!selClip || !clipMap) {
-    return <div className="roll-empty">Select a clip to edit — or double-click an empty slot to create one 🎵</div>
+    return <div className="roll-empty">Select a clip to edit — or double-click an empty slot to create one</div>
   }
 
   // ---------------- toolbar ----------------
@@ -565,22 +566,22 @@ export function PianoRoll() {
   const lenBars = Math.round((clipMap.get('len') ?? BAR) / BAR * 4) / 4
 
   const toolsMenu = (e: React.MouseEvent) => openMenu(e, [
-    { label: '🎹 Chordify (diatonic)', fn: () => replaceSelWith(tools.chordify(entriesSel(), root, scaleId), 'Chordify') },
-    { label: '⬆ Arpeggiate up', fn: () => replaceSelWith(tools.arpeggiate(entriesSel(), gridTicks, 'up'), 'Arpeggiate') },
-    { label: '⬇ Arpeggiate down', fn: () => replaceSelWith(tools.arpeggiate(entriesSel(), gridTicks, 'down'), 'Arpeggiate') },
-    { label: '↕ Arpeggiate up-down', fn: () => replaceSelWith(tools.arpeggiate(entriesSel(), gridTicks, 'updown'), 'Arpeggiate') },
-    { label: '🎸 Strum', fn: () => applyPatches(tools.strum(entriesSel()), 'Strum') },
+    { label: <><Icon name="chord" size={12} /> Chordify (diatonic)</>, fn: () => replaceSelWith(tools.chordify(entriesSel(), root, scaleId), 'Chordify') },
+    { label: <><Icon name="arpUp" size={12} /> Arpeggiate up</>, fn: () => replaceSelWith(tools.arpeggiate(entriesSel(), gridTicks, 'up'), 'Arpeggiate') },
+    { label: <><Icon name="arpDown" size={12} /> Arpeggiate down</>, fn: () => replaceSelWith(tools.arpeggiate(entriesSel(), gridTicks, 'down'), 'Arpeggiate') },
+    { label: <><Icon name="arpUpDown" size={12} /> Arpeggiate up-down</>, fn: () => replaceSelWith(tools.arpeggiate(entriesSel(), gridTicks, 'updown'), 'Arpeggiate') },
+    { label: <><Icon name="strum" size={12} /> Strum</>, fn: () => applyPatches(tools.strum(entriesSel()), 'Strum') },
     'sep',
-    { label: '🎲 Humanize', fn: () => applyPatches(tools.humanize(entriesSel()), 'Humanize') },
-    { label: '⏱ Quantize 100%', fn: () => applyPatches(tools.quantize(entriesSel(), gridTicks, 1), 'Quantize') },
-    { label: '⏱ Quantize 50%', fn: () => applyPatches(tools.quantize(entriesSel(), gridTicks, 0.5), 'Quantize 50%') },
-    { label: '➿ Legato', fn: () => applyPatches(tools.legato(entriesSel(), clipMap.get('len') ?? BAR), 'Legato') },
-    { label: '🔁 Reverse', fn: () => applyPatches(tools.reverse(entriesSel(), clipMap.get('len') ?? BAR), 'Reverse') },
-    { label: '↗ Velocity ramp up', fn: () => applyPatches(tools.velocityRamp(entriesSel(), 0.4, 1), 'Velocity ramp') },
-    { label: '↘ Velocity ramp down', fn: () => applyPatches(tools.velocityRamp(entriesSel(), 1, 0.4), 'Velocity ramp') },
+    { label: <><Icon name="dice" size={12} /> Humanize</>, fn: () => applyPatches(tools.humanize(entriesSel()), 'Humanize') },
+    { label: <><Icon name="grid" size={12} /> Quantize 100%</>, fn: () => applyPatches(tools.quantize(entriesSel(), gridTicks, 1), 'Quantize') },
+    { label: <><Icon name="grid" size={12} /> Quantize 50%</>, fn: () => applyPatches(tools.quantize(entriesSel(), gridTicks, 0.5), 'Quantize 50%') },
+    { label: <><Icon name="legato" size={12} /> Legato</>, fn: () => applyPatches(tools.legato(entriesSel(), clipMap.get('len') ?? BAR), 'Legato') },
+    { label: <><Icon name="reverse" size={12} /> Reverse</>, fn: () => applyPatches(tools.reverse(entriesSel(), clipMap.get('len') ?? BAR), 'Reverse') },
+    { label: <><Icon name="rampUp" size={12} /> Velocity ramp up</>, fn: () => applyPatches(tools.velocityRamp(entriesSel(), 0.4, 1), 'Velocity ramp') },
+    { label: <><Icon name="rampDown" size={12} /> Velocity ramp down</>, fn: () => applyPatches(tools.velocityRamp(entriesSel(), 1, 0.4), 'Velocity ramp') },
     'sep',
     {
-      label: '✖2 Double loop (copy notes)', fn: () => {
+      label: '×2 Double loop (copy notes)', fn: () => {
         const len = clipMap.get('len') ?? BAR
         addNotes(clipMap, tools.shiftedCopies(notesOf(clipMap), len), 'Double loop')
         setClipField(selClip, 'len', len * 2, 'Double loop')
@@ -619,11 +620,11 @@ export function PianoRoll() {
           </select>
         </label>
         <button className={`tbtn ${drawMode ? 'on' : ''}`} onClick={() => setUI({ drawMode: !drawMode })}
-          data-info="Draw mode (B): click to add notes, click notes to erase">✏ Draw</button>
+          data-info="Draw mode (B): click to add notes, click notes to erase"><Icon name="pencil" size={12} /> Draw</button>
         {!isDrum && (
           <>
             <button className={`tbtn ${snapScale ? 'on' : ''}`} onClick={() => setUI({ snapScale: !snapScale })}
-              data-info={`Snap new/transposed notes to ${getScale(scaleId).label}`}>♪ Scale</button>
+              data-info={`Snap new/transposed notes to ${getScale(scaleId).label}`}><Icon name="note" size={12} /> Scale</button>
             <button className={`tbtn ${fold ? 'on' : ''}`} onClick={() => setFold(!fold)}
               data-info="Fold: only show in-scale rows">Fold</button>
           </>
@@ -632,9 +633,9 @@ export function PianoRoll() {
           <button className={`tbtn ${lane === 'vel' ? 'on' : ''}`} onClick={() => setUI({ lane: 'vel' })}>Vel</button>
           <button className={`tbtn ${lane === 'prob' ? 'on' : ''}`} onClick={() => setUI({ lane: 'prob' })}>Chance</button>
         </div>
-        <button className="tbtn" onClick={toolsMenu} data-info="MIDI tools: chordify, arp, strum, humanize, quantize…">🛠 Tools</button>
+        <button className="tbtn" onClick={toolsMenu} data-info="MIDI tools: chordify, arp, strum, humanize, quantize…"><Icon name="tools" size={12} /> Tools</button>
         <span className="roll-selcount">{sel.current.size > 0 ? `${sel.current.size} selected` : ''}</span>
-        <button className="icon-btn roll-close" onClick={() => setUI({ detailOpen: false })} data-info="Close editor (Esc)">✕</button>
+        <button className="icon-btn roll-close" onClick={() => setUI({ detailOpen: false })} data-info="Close editor (Esc)"><Icon name="close" size={12} /></button>
       </div>
       <div className="roll-canvas-box" ref={boxRef}>
         <canvas

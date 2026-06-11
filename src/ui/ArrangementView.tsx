@@ -15,6 +15,7 @@ import { setUI, ui, useUI, toast } from '../state/store'
 import { useY, useRaf } from './hooks'
 import { openMenu, ColorRow, MenuItem, capturePointer } from './widgets'
 import { selectClip } from './actions'
+import { Icon } from './icons'
 import { peersList, subscribeAwareness, awarenessVersion } from '../state/net'
 import { MIDI_LOOPS, PROGRESSIONS, progressionClip } from '../packs'
 import { loadLoop } from './actions'
@@ -167,7 +168,7 @@ export function ArrangementView() {
     const color = CLIP_COLORS[m.get('color') ?? 0]
     const isSel = ui.selClip?.kind === 'arr' && ui.selClip.id === id
     const menu: MenuItem[] = [
-      { label: '✏ Edit notes', fn: () => selectClip({ kind: 'arr', id }, true) },
+      { label: <><Icon name="pencil" size={12} /> Edit notes</>, fn: () => selectClip({ kind: 'arr', id }, true) },
       { label: 'Duplicate after', fn: () => duplicateArrClip(id) },
       { custom: <ColorRow colors={CLIP_COLORS} onPick={i => setClipField({ kind: 'arr', id }, 'color', i)} /> },
       'sep',

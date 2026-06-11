@@ -147,7 +147,7 @@ export function loadDemo() {
   loadProject(demoProject(), 'Load demo song')
   selectTrack(null)
   setUI({ selClip: null })
-  toast('Demo song loaded — hit a scene ▶')
+  toast('Demo song loaded — press a scene number to jam')
 }
 
 export function newProject() {

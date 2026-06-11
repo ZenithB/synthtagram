@@ -12,6 +12,7 @@ import { Knob, openMenu } from './widgets'
 import { INSTRUMENTS, EFFECTS, instSchema, fxSchema, defaultsFor } from '../audio/schema'
 import { INST_PRESETS, DRUM_KITS } from '../packs'
 import { engine } from '../audio/engine'
+import { Icon } from './icons'
 
 function InstrumentPanel({ trackId, track }: { trackId: string; track: Y.Map<any> }) {
   const inst = track.get('inst') as Y.Map<any>
@@ -37,7 +38,7 @@ function InstrumentPanel({ trackId, track }: { trackId: string; track: Y.Map<any
   return (
     <div className="device inst-device">
       <div className="device-head">
-        <span className="device-title">{schema.icon} {schema.label}</span>
+        <span className="device-title"><Icon name={schema.icon} size={13} /> {schema.label}</span>
         {kind !== 'drum' && (
           <select
             className="device-select"
@@ -108,12 +109,12 @@ function FxCard({ trackId, fx }: { trackId: string; fx: Y.Map<any> }) {
   return (
     <div className={`device fx-device ${on ? '' : 'bypassed'}`}>
       <div className="device-head">
-        <button className={`power ${on ? 'on' : ''}`} data-info="Bypass effect" onClick={() => setFxOn(trackId, fxId, !on)}>⏻</button>
-        <span className="device-title">{schema.icon} {schema.label}</span>
+        <button className={`power ${on ? 'on' : ''}`} data-info="Bypass effect" onClick={() => setFxOn(trackId, fxId, !on)}><Icon name="power" size={13} /></button>
+        <span className="device-title"><Icon name={schema.icon} size={13} /> {schema.label}</span>
         <span className="device-actions">
-          <button className="icon-btn" data-info="Move effect earlier in the chain" onClick={() => moveFx(trackId, fxId, -1)}>◀</button>
-          <button className="icon-btn" data-info="Move effect later in the chain" onClick={() => moveFx(trackId, fxId, 1)}>▶</button>
-          <button className="icon-btn" data-info="Remove effect" onClick={() => removeFx(trackId, fxId)}>✕</button>
+          <button className="icon-btn" data-info="Move effect earlier in the chain" onClick={() => moveFx(trackId, fxId, -1)}><Icon name="chevL" size={11} /></button>
+          <button className="icon-btn" data-info="Move effect later in the chain" onClick={() => moveFx(trackId, fxId, 1)}><Icon name="chevR" size={11} /></button>
+          <button className="icon-btn" data-info="Remove effect" onClick={() => removeFx(trackId, fxId)}><Icon name="close" size={11} /></button>
         </span>
       </div>
       <div className="knob-row">
@@ -130,7 +131,7 @@ export function DeviceRack() {
   const track = selTrackId ? trackById(selTrackId) : undefined
   useY(track)
   if (!selTrackId || !track) {
-    return <div className="roll-empty">Select a track to see its instrument & effects 🎛️</div>
+    return <div className="roll-empty">Select a track to see its instrument & effects</div>
   }
   const fxArr = track.get('fx') as Y.Array<Y.Map<any>>
   return (
@@ -142,11 +143,11 @@ export function DeviceRack() {
         className="add-fx"
         data-info="Add an effect to this track's chain"
         onClick={e => openMenu(e, EFFECTS.map(ef => ({
-          label: `${ef.icon} ${ef.label}`,
+          label: <><Icon name={ef.icon} size={12} /> {ef.label}</>,
           fn: () => addFx(selTrackId, ef.type, defaultsFor(ef.params)),
         })))}
       >
-        ＋ Effect
+        <Icon name="plus" size={12} /> Effect
       </button>
     </div>
   )

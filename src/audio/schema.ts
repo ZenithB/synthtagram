@@ -54,7 +54,7 @@ function drumParams(): ParamSpec[] {
 
 export const INSTRUMENTS: InstrumentSchema[] = [
   {
-    type: 'poly', label: 'Analog Poly', icon: '〰️',
+    type: 'poly', label: 'Analog Poly', icon: 'wave',
     params: [
       { key: 'wave', label: 'Wave', min: 0, max: WAVE_LABELS.length - 1, def: 0, int: true, steps: WAVE_LABELS },
       { key: 'spread', label: 'Spread', min: 0, max: 60, def: 18, fmt: v => `${Math.round(v)}ct` },
@@ -64,7 +64,7 @@ export const INSTRUMENTS: InstrumentSchema[] = [
     ],
   },
   {
-    type: 'duo', label: 'Duo Thick', icon: '👯',
+    type: 'duo', label: 'Duo Thick', icon: 'duo',
     params: [
       { key: 'harm', label: 'Interval', min: 0.5, max: 3, def: 1.5, fmt: fmtX },
       { key: 'vibAmt', label: 'Vibrato', min: 0, max: 0.6, def: 0.12, fmt: fmtPct },
@@ -73,7 +73,7 @@ export const INSTRUMENTS: InstrumentSchema[] = [
     ],
   },
   {
-    type: 'fm', label: 'FM Synth', icon: '🔔',
+    type: 'fm', label: 'FM Synth', icon: 'bell',
     params: [
       { key: 'harm', label: 'Ratio', min: 0.25, max: 8, def: 3, fmt: fmtX },
       { key: 'modIdx', label: 'FM Amt', min: 0.5, max: 40, def: 10, exp: true, fmt: v => v.toFixed(1) },
@@ -81,7 +81,7 @@ export const INSTRUMENTS: InstrumentSchema[] = [
     ],
   },
   {
-    type: 'mono', label: 'Mono Bass', icon: '🐍',
+    type: 'mono', label: 'Mono Bass', icon: 'bass',
     params: [
       { key: 'wave', label: 'Wave', min: 0, max: 3, def: 0, int: true, steps: WAVE_LABELS },
       { key: 'cutoff', label: 'Cutoff', min: 40, max: 8000, def: 900, exp: true, fmt: fmtHz },
@@ -92,20 +92,20 @@ export const INSTRUMENTS: InstrumentSchema[] = [
     ],
   },
   {
-    type: 'pluck', label: 'Pluck', icon: '🪕',
+    type: 'pluck', label: 'Pluck', icon: 'pluck',
     params: [
       { key: 'dampen', label: 'Tone', min: 500, max: 12000, def: 4000, exp: true, fmt: fmtHz },
       { key: 'res', label: 'Sustain', min: 0.3, max: 0.98, def: 0.93, fmt: fmtPct },
     ],
   },
   {
-    type: 'keys', label: 'Dream Keys', icon: '🎹',
+    type: 'keys', label: 'Dream Keys', icon: 'keys',
     params: [
       { key: 'harm', label: 'Color', min: 0.5, max: 4, def: 2, fmt: fmtX },
       ...adsr(0.01, 0.4, 0.5, 0.8),
     ],
   },
-  { type: 'drum', label: 'Drum Kit', icon: '🥁', params: drumParams() },
+  { type: 'drum', label: 'Drum Kit', icon: 'drum', params: drumParams() },
 ]
 
 // ----------------- effects -----------------
@@ -113,7 +113,7 @@ export type EffectSchema = { type: string; label: string; icon: string; params: 
 
 export const EFFECTS: EffectSchema[] = [
   {
-    type: 'eq', label: 'EQ Three', icon: '🎚️',
+    type: 'eq', label: 'EQ Three', icon: 'eq',
     params: [
       { key: 'low', label: 'Low', min: -12, max: 12, def: 0, fmt: fmtDb },
       { key: 'mid', label: 'Mid', min: -12, max: 12, def: 0, fmt: fmtDb },
@@ -121,7 +121,7 @@ export const EFFECTS: EffectSchema[] = [
     ],
   },
   {
-    type: 'filter', label: 'Filter', icon: '🌀',
+    type: 'filter', label: 'Filter', icon: 'filter',
     params: [
       { key: 'ftype', label: 'Type', min: 0, max: 2, def: 0, int: true, steps: ['LP', 'HP', 'BP'] },
       { key: 'freq', label: 'Freq', min: 40, max: 18000, def: 2000, exp: true, fmt: fmtHz },
@@ -129,7 +129,7 @@ export const EFFECTS: EffectSchema[] = [
     ],
   },
   {
-    type: 'delay', label: 'Echo', icon: '⏱️',
+    type: 'delay', label: 'Echo', icon: 'echo',
     params: [
       { key: 'time', label: 'Time', min: 0, max: DELAY_DIVS.length - 1, def: 2, int: true, steps: DELAY_DIVS },
       { key: 'fb', label: 'Feedback', min: 0, max: 0.85, def: 0.35, fmt: fmtPct },
@@ -137,14 +137,14 @@ export const EFFECTS: EffectSchema[] = [
     ],
   },
   {
-    type: 'reverb', label: 'Reverb', icon: '🏛️',
+    type: 'reverb', label: 'Reverb', icon: 'reverb',
     params: [
       { key: 'size', label: 'Size', min: 0.2, max: 10, def: 2.2, exp: true, fmt: fmtSec },
       { key: 'mix', label: 'Mix', min: 0, max: 1, def: 0.3, fmt: fmtPct },
     ],
   },
   {
-    type: 'chorus', label: 'Chorus', icon: '🌊',
+    type: 'chorus', label: 'Chorus', icon: 'chorus',
     params: [
       { key: 'rate', label: 'Rate', min: 0.1, max: 8, def: 1.5, exp: true, fmt: v => `${v.toFixed(1)}Hz` },
       { key: 'depth', label: 'Depth', min: 0, max: 1, def: 0.5, fmt: fmtPct },
@@ -152,21 +152,21 @@ export const EFFECTS: EffectSchema[] = [
     ],
   },
   {
-    type: 'dist', label: 'Drive', icon: '🔥',
+    type: 'dist', label: 'Drive', icon: 'bolt',
     params: [
       { key: 'amt', label: 'Drive', min: 0, max: 1, def: 0.4, fmt: fmtPct },
       { key: 'mix', label: 'Mix', min: 0, max: 1, def: 1, fmt: fmtPct },
     ],
   },
   {
-    type: 'crush', label: 'Crusher', icon: '🎮',
+    type: 'crush', label: 'Crusher', icon: 'crush',
     params: [
       { key: 'bits', label: 'Bits', min: 1, max: 16, def: 8, int: true, fmt: v => `${Math.round(v)}bit` },
       { key: 'mix', label: 'Mix', min: 0, max: 1, def: 1, fmt: fmtPct },
     ],
   },
   {
-    type: 'comp', label: 'Compressor', icon: '🗜️',
+    type: 'comp', label: 'Compressor', icon: 'comp',
     params: [
       { key: 'thresh', label: 'Thresh', min: -60, max: 0, def: -20, fmt: fmtDb },
       { key: 'ratio', label: 'Ratio', min: 1, max: 20, def: 4, fmt: v => `${v.toFixed(0)}:1` },
@@ -175,7 +175,7 @@ export const EFFECTS: EffectSchema[] = [
     ],
   },
   {
-    type: 'phaser', label: 'Phaser', icon: '🛸',
+    type: 'phaser', label: 'Phaser', icon: 'phaser',
     params: [
       { key: 'rate', label: 'Rate', min: 0.05, max: 8, def: 0.8, exp: true, fmt: v => `${v.toFixed(2)}Hz` },
       { key: 'octaves', label: 'Sweep', min: 1, max: 6, def: 3, int: true, fmt: v => `${Math.round(v)}oct` },
@@ -183,7 +183,7 @@ export const EFFECTS: EffectSchema[] = [
     ],
   },
   {
-    type: 'pingpong', label: 'Ping Pong', icon: '🏓',
+    type: 'pingpong', label: 'Ping Pong', icon: 'pingpong',
     params: [
       { key: 'time', label: 'Time', min: 0, max: DELAY_DIVS.length - 1, def: 2, int: true, steps: DELAY_DIVS },
       { key: 'fb', label: 'Feedback', min: 0, max: 0.85, def: 0.4, fmt: fmtPct },
@@ -191,7 +191,7 @@ export const EFFECTS: EffectSchema[] = [
     ],
   },
   {
-    type: 'autofilt', label: 'Auto Filter', icon: '🎢',
+    type: 'autofilt', label: 'Auto Filter', icon: 'autofilt',
     params: [
       { key: 'rate', label: 'Rate', min: 0.05, max: 8, def: 1, exp: true, fmt: v => `${v.toFixed(2)}Hz` },
       { key: 'depth', label: 'Depth', min: 0, max: 1, def: 0.7, fmt: fmtPct },
@@ -200,7 +200,7 @@ export const EFFECTS: EffectSchema[] = [
     ],
   },
   {
-    type: 'trem', label: 'Tremolo', icon: '🫨',
+    type: 'trem', label: 'Tremolo', icon: 'trem',
     params: [
       { key: 'rate', label: 'Rate', min: 0.5, max: 16, def: 5, exp: true, fmt: v => `${v.toFixed(1)}Hz` },
       { key: 'depth', label: 'Depth', min: 0, max: 1, def: 0.6, fmt: fmtPct },
@@ -208,14 +208,14 @@ export const EFFECTS: EffectSchema[] = [
     ],
   },
   {
-    type: 'autopan', label: 'Auto Pan', icon: '↔️',
+    type: 'autopan', label: 'Auto Pan', icon: 'autopan',
     params: [
       { key: 'rate', label: 'Rate', min: 0.1, max: 10, def: 1.5, exp: true, fmt: v => `${v.toFixed(1)}Hz` },
       { key: 'depth', label: 'Depth', min: 0, max: 1, def: 0.8, fmt: fmtPct },
     ],
   },
   {
-    type: 'vib', label: 'Vibrato', icon: '🎻',
+    type: 'vib', label: 'Vibrato', icon: 'vib',
     params: [
       { key: 'rate', label: 'Rate', min: 0.5, max: 12, def: 5, exp: true, fmt: v => `${v.toFixed(1)}Hz` },
       { key: 'depth', label: 'Depth', min: 0, max: 0.6, def: 0.15, fmt: fmtPct },
@@ -223,20 +223,20 @@ export const EFFECTS: EffectSchema[] = [
     ],
   },
   {
-    type: 'cheby', label: 'Heat', icon: '🌶️',
+    type: 'cheby', label: 'Heat', icon: 'heat',
     params: [
       { key: 'order', label: 'Order', min: 2, max: 14, def: 3, int: true, fmt: v => `${Math.round(v)}` },
       { key: 'mix', label: 'Mix', min: 0, max: 1, def: 0.35, fmt: fmtPct },
     ],
   },
   {
-    type: 'widen', label: 'Widener', icon: '🦅',
+    type: 'widen', label: 'Widener', icon: 'widen',
     params: [
       { key: 'width', label: 'Width', min: 0, max: 1, def: 0.8, fmt: fmtPct },
     ],
   },
   {
-    type: 'shift', label: 'Freq Shift', icon: '👽',
+    type: 'shift', label: 'Freq Shift', icon: 'shift',
     params: [
       { key: 'amt', label: 'Shift', min: -400, max: 400, def: 60, fmt: v => `${Math.round(v)}Hz` },
       { key: 'mix', label: 'Mix', min: 0, max: 1, def: 0.4, fmt: fmtPct },

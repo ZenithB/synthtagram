@@ -16,6 +16,7 @@ import { captureToClip } from '../audio/input'
 import { addFx } from '../state/doc'
 import { EFFECTS, defaultsFor } from '../audio/schema'
 import { INST_PRESETS } from '../packs'
+import { Icon } from './icons'
 
 // ---------------- toasts ----------------
 export function Toasts() {
@@ -37,7 +38,7 @@ export function UndoPanel() {
     <div className="undo-panel">
       <div className="panel-head">
         <span>Your edit history</span>
-        <button className="icon-btn" onClick={() => setUI({ historyOpen: false })}>✕</button>
+        <button className="icon-btn" onClick={() => setUI({ historyOpen: false })}><Icon name="close" size={12} /></button>
       </div>
       <div className="undo-list">
         {items.length === 0 && <div className="undo-empty">No edits yet — go make some noise</div>}
@@ -165,7 +166,7 @@ export function ShareDialog() {
             <p>This project is live. Anyone with the link joins instantly — edits sync note-by-note, presence and all. <b>{peers}</b> {peers === 1 ? 'person is' : 'people are'} here now ({status}).</p>
             <div className="share-link">
               <input readOnly value={link} onFocus={e => e.target.select()} />
-              <button className="bbtn" onClick={() => { navigator.clipboard.writeText(link).then(() => toast('Link copied 📋')) }}>Copy</button>
+              <button className="bbtn" onClick={() => { navigator.clipboard.writeText(link).then(() => toast('Link copied')) }}>Copy</button>
             </div>
             <p className="share-small">Peer-to-peer via WebRTC — no server keeps your music. Each visitor keeps a local copy (autosaved), so the project survives everyone leaving.</p>
             <button className="bbtn" onClick={leaveRoomAndGo}>Leave room (back to local project)</button>
@@ -173,7 +174,7 @@ export function ShareDialog() {
         ) : (
           <>
             <p>Create a share link and this project becomes a live multiplayer session — like a Google Doc, but it slaps.</p>
-            <button className="bbtn primary" onClick={() => { createRoomAndGo() }}>🔗 Create share link</button>
+            <button className="bbtn primary" onClick={() => { createRoomAndGo() }}><Icon name="link" size={13} />Create share link</button>
             <p className="share-small">Your current project comes with you. Playback stays local to each person; the music data syncs in real time.</p>
           </>
         )}
@@ -240,7 +241,7 @@ export function ChatPanel() {
     <div className="chat">
       <div className="panel-head">
         <span>Chat</span>
-        <button className="icon-btn" onClick={() => setUI({ chatOpen: false })}>✕</button>
+        <button className="icon-btn" onClick={() => setUI({ chatOpen: false })}><Icon name="close" size={12} /></button>
       </div>
       <div className="chat-list" ref={listRef}>
         {chat.toArray().map((m: any) => (
@@ -249,7 +250,7 @@ export function ChatPanel() {
             <span className="chat-text">{m.text}</span>
           </div>
         ))}
-        {chat.length === 0 && <div className="undo-empty">Say hi 👋 — chat syncs with the project</div>}
+        {chat.length === 0 && <div className="undo-empty">Say hi — chat syncs with the project</div>}
       </div>
       <div className="chat-input">
         <input value={text} placeholder="Message…" onChange={e => setText(e.target.value)}
@@ -272,7 +273,7 @@ export function Onboard() {
     if (loadDemoToo) loadDemo()
   }
   return (
-    <Modal title="Welcome to Synthtagram 🎛️" onClose={() => done(false)} width={460}>
+    <Modal title="Welcome to Synthtagram" onClose={() => done(false)} width={460}>
       <div className="onboard">
         <p>A tiny Ableton-style studio that lives in a link. Launch clips, twist synths, and invite friends to edit the same song <i>live</i>.</p>
         <label className="share-row">
@@ -280,12 +281,12 @@ export function Onboard() {
           <input value={name} onChange={e => setUI({ userName: e.target.value })} />
         </label>
         <ul className="onboard-tips">
-          <li>🎹 Keys <b>A–K</b> play the selected track</li>
-          <li>▶ Click slot triangles — clips launch on the beat</li>
-          <li>🔗 <b>Share</b> turns this into a multiplayer session</li>
+          <li><Icon name="keys" size={13} />Keys <b>A–K</b> play the selected track</li>
+          <li><Icon name="play" size={13} />Click slot triangles — clips launch on the beat</li>
+          <li><Icon name="link" size={13} /><b>Share</b> turns this into a multiplayer session</li>
         </ul>
         <div className="onboard-btns">
-          <button className="bbtn primary" onClick={() => done(true)}>🎁 Start with the demo song</button>
+          <button className="bbtn primary" onClick={() => done(true)}><Icon name="spark" size={13} />Start with the demo song</button>
           <button className="bbtn" onClick={() => done(false)}>Start from scratch</button>
         </div>
       </div>
@@ -306,13 +307,13 @@ export function StatusBar() {
     <div className="statusbar">
       <span className="status-info">{info || 'Hover anything to learn what it does · double-click slots to make clips · A–K plays notes'}</span>
       <span className="status-right">
-        {recording && <span className="status-pill rec">● REC</span>}
+        {recording && <span className="status-pill rec"><i className="dot rec" />REC</span>}
         <span className="status-pill" data-info="Computer-keyboard octave (Z/X) and velocity (C/V)">Oct {octave} · Vel {Math.round(velo * 100)}</span>
         {audioReady
           ? <span className="status-pill ok" data-info="Audio engine runs at 2x oversampling for alias-free FM & distortion">{Math.round((engine.sampleRate || 0) / 100) / 10} kHz · 2x</span>
-          : <span className="status-pill warn">🔇 click anywhere to enable audio</span>}
+          : <span className="status-pill warn"><i className="dot warn" />click anywhere to enable audio</span>}
         <span className={`status-pill net-${status}`} data-info="Local: just you (autosaved). Online: synced with friends via P2P">
-          {status === 'local' ? '⊘ Local project' : status === 'connecting' ? '🟡 Looking for peers…' : `🟢 Online · ${peers}`}
+          {status === 'local' ? <><i className="dot" />Local project</> : status === 'connecting' ? <><i className="dot warn" />Looking for peers…</> : <><i className="dot ok" />Online · {peers}</>}
         </span>
       </span>
     </div>

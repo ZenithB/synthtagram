@@ -110,7 +110,7 @@ export async function startP2P() {
       sendS(Y.encodeStateAsUpdate(doc), peer).catch(() => {})
       sendA(encodeAwarenessUpdate(awareness, [...awareness.getStates().keys()]), peer).catch(() => {})
       setUI({ netStatus: 'online' })
-      toast('A friend connected 🎶')
+      toast('A friend connected')
     })
     room.onPeerLeave(() => {
       if (Object.keys(room.getPeers()).length === 0) setUI({ netStatus: 'connecting' })

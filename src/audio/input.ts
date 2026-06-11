@@ -109,7 +109,7 @@ export function initWebMidi() {
     access.onstatechange = (e: any) => {
       if (e.port.type === 'input' && e.port.state === 'connected') hook(e.port)
     }
-    if (access.inputs.size > 0) toast('MIDI controller connected 🎹')
+    if (access.inputs.size > 0) toast('MIDI controller connected')
   }).catch(() => { /* midi optional */ })
 }
 
@@ -158,6 +158,6 @@ export function captureToClip() {
   cm.set('name', 'Captured')
   addNotes(cm, raw, 'Capture')
   setUI({ selClip: ref, selTrackId: tid, detailOpen: true, detailTab: 'clip' })
-  toast(`Captured ${raw.length} notes into a ${lenBars}-bar clip ✨`)
+  toast(`Captured ${raw.length} notes into a ${lenBars}-bar clip`)
   captureBuf.length = 0
 }

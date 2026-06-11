@@ -1,5 +1,6 @@
 // Left-side browser: searchable sound packs. Single click auditions, double
-// click (or drag onto a track/slot) loads. Loops carry real MIDI patterns.
+// click (or drag onto a track/slot) loads. Loops carry real MIDI patterns;
+// chord progressions render into the current project key.
 
 import React, { useState } from 'react'
 import { INST_PRESETS, DRUM_KITS, MIDI_LOOPS, PROGRESSIONS, progressionPitches } from '../packs'
@@ -9,6 +10,8 @@ import { exportProjectFile } from '../audio/render'
 import { meta } from '../state/doc'
 import { useY } from './hooks'
 import { NOTE_NAMES } from '../theory'
+import { instSchema } from '../audio/schema'
+import { Icon } from './icons'
 
 function Section({ title, children, defaultOpen = true }: { title: string; children: React.ReactNode; defaultOpen?: boolean }) {
   const [open, setOpen] = useState(defaultOpen)
@@ -21,6 +24,8 @@ function Section({ title, children, defaultOpen = true }: { title: string; child
     </div>
   )
 }
+
+const LOOP_ICONS: Record<string, string> = { Drums: 'drum', Bass: 'bass', Chords: 'chord', Melody: 'note', Arps: 'arpUp' }
 
 export function Browser() {
   const [q, setQ] = useState('')
@@ -41,11 +46,12 @@ export function Browser() {
   return (
     <div className="browser">
       <div className="browser-search">
+        <Icon name="search" size={13} />
         <input
-          placeholder="🔍 Search sounds…"
+          placeholder="Search sounds…"
           value={q}
           onChange={e => setQ(e.target.value)}
-          data-info="Search every pack: presets, kits and loops"
+          data-info="Search every pack: presets, kits, loops and progressions"
         />
       </div>
       <div className="browser-scroll">
@@ -63,7 +69,7 @@ export function Browser() {
                   onDoubleClick={() => applyPreset(p)}
                   data-info="Click: audition · Double-click: load to selected track · Drag onto a track"
                 >
-                  <span className="bitem-icon">〰️</span>{p.name}
+                  <span className="bitem-icon"><Icon name={instSchema(p.type).icon} size={12} /></span>{p.name}
                 </div>
               ))}
             </div>
@@ -81,7 +87,7 @@ export function Browser() {
               onDoubleClick={() => applyDrumKit(k.name)}
               data-info="Click: audition · Double-click: load kit · Drag onto a drum track"
             >
-              <span className="bitem-icon">🥁</span>{k.name}
+              <span className="bitem-icon"><Icon name="drum" size={12} /></span>{k.name}
             </div>
           ))}
         </Section>
@@ -98,7 +104,7 @@ export function Browser() {
               onDoubleClick={() => loadProgression(p)}
               data-info={`${p.numerals} (${p.mode}) — click: hear it in ${NOTE_NAMES[rootPc]} · double-click: drop into a slot · drag anywhere`}
             >
-              <span className="bitem-icon">{p.mode === 'major' ? '🌞' : '🌙'}</span>{p.name}
+              <span className="bitem-icon"><Icon name={p.mode === 'major' ? 'sun' : 'moon'} size={12} /></span>{p.name}
               <span className="bitem-sub">{p.numerals}</span>
             </div>
           ))}
@@ -120,7 +126,7 @@ export function Browser() {
                     onDoubleClick={() => loadLoop(l)}
                     data-info="Double-click: drop into a free slot · Drag onto any clip slot or the timeline"
                   >
-                    <span className="bitem-icon">{cat === 'Drums' ? '🥁' : '🎵'}</span>{l.name}
+                    <span className="bitem-icon"><Icon name={LOOP_ICONS[cat] ?? 'note'} size={12} /></span>{l.name}
                   </div>
                 ))}
               </div>
@@ -129,10 +135,10 @@ export function Browser() {
         </Section>
 
         <Section title="Project">
-          <button className="bbtn" onClick={loadDemo} data-info="Load the demo song (replaces the current project — undoable)">🎁 Load demo song</button>
-          <button className="bbtn" onClick={newProject} data-info="Start fresh (undoable)">✨ New project</button>
-          <button className="bbtn" onClick={exportProjectFile} data-info="Download the project as a shareable .json file">💾 Save project file</button>
-          <button className="bbtn" onClick={importProjectFile} data-info="Load a saved .synthtagram.json project">📂 Import project</button>
+          <button className="bbtn" onClick={loadDemo} data-info="Load the demo song (replaces the current project — undoable)"><Icon name="spark" size={13} />Load demo song</button>
+          <button className="bbtn" onClick={newProject} data-info="Start fresh (undoable)"><Icon name="newdoc" size={13} />New project</button>
+          <button className="bbtn" onClick={exportProjectFile} data-info="Download the project as a shareable .json file"><Icon name="save" size={13} />Save project file</button>
+          <button className="bbtn" onClick={importProjectFile} data-info="Load a saved .synthtagram.json project"><Icon name="folder" size={13} />Import project</button>
         </Section>
       </div>
     </div>

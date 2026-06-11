@@ -15,6 +15,7 @@ import { setUI, ui, useUI, toast } from '../state/store'
 import { useY, useRaf } from './hooks'
 import { Fader, MeterBar, Knob, openMenu, ColorRow, MenuItem } from './widgets'
 import { peersList, subscribeAwareness, awarenessVersion, setPresence } from '../state/net'
+import { Icon } from './icons'
 import {
   selectClip, selectTrack, copyClipRef, pasteClipTo, hasClipboard,
   addSynthTrack, addDrumTrack, duplicateClipToNextScene, loadLoop, loadProgression,
@@ -108,7 +109,7 @@ function ClipSlot({ track, sceneId }: { track: Y.Map<any>; sceneId: string }) {
           { label: 'Paste clip', fn: () => pasteClipTo(trackId, sceneId), disabled: !hasClipboard() },
         ])}
       >
-        {engine.clipState(trackId, sceneId).playing ? null : <span className="slot-stop-ghost">◻</span>}
+        {engine.clipState(trackId, sceneId).playing ? null : <span className="slot-stop-ghost"><Icon name="stopOutline" size={9} /></span>}
       </div>
     )
   }
@@ -116,9 +117,9 @@ function ClipSlot({ track, sceneId }: { track: Y.Map<any>; sceneId: string }) {
   const color = CLIP_COLORS[cm.get('color') ?? 0]
   const name = cm.get('name') ?? 'Clip'
   const menuItems: MenuItem[] = [
-    { label: '▶ Launch', fn: () => engine.launchClip(trackId, sceneId) },
-    { label: '◻ Stop track', fn: () => engine.stopClip(trackId) },
-    { label: '✏ Edit notes', fn: open },
+    { label: <><Icon name="play" size={12} /> Launch</>, fn: () => engine.launchClip(trackId, sceneId) },
+    { label: <><Icon name="stopOutline" size={12} /> Stop track</>, fn: () => engine.stopClip(trackId) },
+    { label: <><Icon name="pencil" size={12} /> Edit notes</>, fn: open },
     'sep',
     { label: 'Rename', fn: () => setRenaming(true) },
     { custom: <ColorRow colors={CLIP_COLORS} onPick={i => setClipField({ kind: 'session', trackId, sceneId }, 'color', i)} /> },
@@ -152,7 +153,7 @@ function ClipSlot({ track, sceneId }: { track: Y.Map<any>; sceneId: string }) {
           else engine.launchClip(trackId, sceneId)
         }}
       >
-        {st.playing && !st.stopQueued ? '■' : '▶'}
+        <Icon name={st.playing && !st.stopQueued ? 'stop' : 'play'} size={11} />
       </button>
       {renaming
         ? <InlineRename value={name} onDone={v => { setRenaming(false); if (v) setClipField({ kind: 'session', trackId, sceneId }, 'name', v) }} />
@@ -201,7 +202,7 @@ function TrackHeader({ track }: { track: Y.Map<any> }) {
       data-info="Click to select & open devices. Right-click for track options."
     >
       <div className="track-title">
-        <span className="track-icon">{kind === 'drum' ? '🥁' : '〰️'}</span>
+        <span className="track-icon"><Icon name={kind === 'drum' ? 'drum' : 'wave'} size={12} /></span>
         {renaming
           ? <InlineRename value={track.get('name')} onDone={v => { setRenaming(false); if (v) renameTrack(trackId, v) }} />
           : <span className="track-name" onDoubleClick={() => setRenaming(true)}>{track.get('name')}</span>}
@@ -211,7 +212,7 @@ function TrackHeader({ track }: { track: Y.Map<any> }) {
           className={`tbtn arm ${isArmed ? 'on' : ''}`}
           data-info="Arm: route your keyboard/MIDI to this track (and record into it)"
           onClick={e => { e.stopPropagation(); setUI({ armTrackId: isArmed ? null : trackId }) }}
-        >●</button>
+        ><Icon name="rec" size={9} /></button>
         <button
           className={`tbtn mute ${track.get('mute') ? 'on' : ''}`}
           data-info="Mute track"
@@ -247,7 +248,7 @@ function SceneCell({ scene, index }: { scene: Y.Map<any>; index: number }) {
         { label: 'Delete scene', fn: () => removeScene(sceneId), danger: true },
       ])}
     >
-      <button className="scene-play" onClick={() => engine.launchScene(sceneId)}>▶</button>
+      <button className="scene-play" onClick={() => engine.launchScene(sceneId)}><Icon name="play" size={11} /></button>
       {renaming
         ? <InlineRename value={scene.get('name')} onDone={v => { setRenaming(false); if (v) renameScene(sceneId, v) }} />
         : <span className="scene-name" onDoubleClick={() => setRenaming(true)}>{scene.get('name')}</span>}
@@ -273,7 +274,7 @@ export function SessionView() {
                 <ClipSlot key={s.get('id')} track={t} sceneId={s.get('id')} />
               ))}
             </div>
-            <button className="track-stop" data-info="Stop this track's clip" onClick={() => engine.stopClip(t.get('id'))}>◻</button>
+            <button className="track-stop" data-info="Stop this track's clip" onClick={() => engine.stopClip(t.get('id'))}><Icon name="stopOutline" size={11} /></button>
           </div>
         ))}
 
@@ -298,7 +299,7 @@ export function SessionView() {
               <Fader value={meta.get('masterGain') ?? 0} onChange={v => setMetaField('Master volume', 'masterGain', v)} height={80} />
               <MeterBar getDb={() => engine.masterDb()} height={80} />
             </div>
-            <button className="stop-all" onClick={() => engine.stopAllClips()} data-info="Stop all clips (transport keeps rolling)">◻ All</button>
+            <button className="stop-all" onClick={() => engine.stopAllClips()} data-info="Stop all clips (transport keeps rolling)"><Icon name="stopOutline" size={11} /> All</button>
           </div>
         </div>
       </div>

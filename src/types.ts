@@ -14,14 +14,15 @@ export type ClipRef =
 
 export type TrackKind = 'synth' | 'drum'
 
+// Palette: olive-gold primary, terracotta + teal secondaries, warm neutrals.
 export const CLIP_COLORS = [
-  '#e74c3c', '#e67e22', '#f1c40f', '#a3cb38', '#2ecc71', '#1abc9c',
-  '#3498db', '#5e72e4', '#9b59b6', '#e84393', '#fd79a8', '#95a5a6',
+  '#FF9C87', '#D38878', '#AF513E', '#922710', '#FFF287', '#D3C978',
+  '#AFA23E', '#928310', '#559DA0', '#497D80', '#26676A', '#8E8C84',
 ]
 
 export const USER_COLORS = [
-  '#ff5d5d', '#ffb02e', '#ffe14d', '#7bed8d', '#39d0d8', '#5e9bff',
-  '#a06bff', '#ff6bd6', '#8aff80', '#ff9d6b',
+  '#FF9C87', '#FFF287', '#D3C978', '#AFA23E', '#559DA0', '#7FB6B9',
+  '#D38878', '#E8E2C8', '#92C2C4', '#C2B86A',
 ]
 
 export const DRUM_PADS = ['Kick', 'Snare', 'Clap', 'Cl Hat', 'Op Hat', 'Lo Tom', 'Perc', 'Crash']
