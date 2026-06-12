@@ -94,11 +94,11 @@ src/
 
 Every edit goes through a labeled Yjs transaction → it's undoable, it appears in the history panel, and it broadcasts to peers. The audio engine *observes* the document, so a collaborator twisting a knob retunes your local audio within a frame.
 
-## Honest limitations
+## Limitations
 
-- No audio-clip recording or sample import yet (synthesis only — that's v2 territory, along with parameter automation lanes).
+- No audio-clip recording or sample import yet (synthesis only). v2 will integrate clip-based audio.
 - P2P discovery uses public relays; on very locked-down networks peers may not connect (tabs on the same machine always sync).
-- Desktop-first. It runs on tablets, but a DAW wants a pointer.
+- Intended for desktop/laptop usage. Will work on phones and tablets, but not optimised.
 
 ---
 

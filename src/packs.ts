@@ -83,6 +83,7 @@ export const INST_PRESETS: InstPreset[] = [
   { name: 'Dream Keys', cat: 'Keys', ...preset('keys', { harm: 2, attack: 0.01, decay: 0.5, sustain: 0.45, release: 0.9 }) },
   { name: 'EP Glow', cat: 'Keys', ...preset('keys', { harm: 1, attack: 0.005, decay: 0.7, sustain: 0.3, release: 0.6 }) },
   { name: 'FM Keys', cat: 'Keys', ...preset('fm', { harm: 1, modIdx: 6, attack: 0.004, decay: 0.5, sustain: 0.35, release: 0.5 }) },
+  { name: 'Soft Piano', cat: 'Keys', ...preset('poly', { wave: 0, cutoff: 4200, res: 0.4, attack: 0.002, decay: 1.1, sustain: 0.18, release: 0.35 }) },
   { name: 'House Stab Piano', cat: 'Keys', ...preset('poly', { wave: 0, cutoff: 4800, res: 0.9, attack: 0.002, decay: 0.4, sustain: 0.15, release: 0.25 }) },
   { name: 'Clav Funk', cat: 'Keys', ...preset('poly', { wave: 1, cutoff: 3000, res: 2.2, attack: 0.001, decay: 0.2, sustain: 0.1, release: 0.1 }) },
   { name: 'Organ Duo', cat: 'Keys', ...preset('duo', { harm: 2, vibAmt: 0.08, vibRate: 6.5, attack: 0.004, decay: 0.1, sustain: 0.95, release: 0.12 }) },
@@ -546,7 +547,7 @@ export const DEFAULT_PROJECT: ProjectJSON = {
   tracks: [
     { id: 'tDrums', name: 'Drums', color: 0, kind: 'drum', inst: { type: 'drum', params: DRUM_KITS[0].params }, fx: [{ type: 'comp', on: true, params: { thresh: -18, ratio: 4, attack: 0.01, release: 0.18 } }], gain: 0, pan: 0, mute: false, solo: false },
     { id: 'tBass', name: 'Bass', color: 6, kind: 'synth', inst: { type: 'mono', params: INST_PRESETS.find(p => p.name === 'Sub Bass')!.params }, fx: [], gain: -2, pan: 0, mute: false, solo: false },
-    { id: 'tChords', name: 'Chords', color: 8, kind: 'synth', inst: { type: 'poly', params: INST_PRESETS.find(p => p.name === 'Warm Pad')!.params }, fx: [{ type: 'reverb', on: true, params: { size: 2.8, mix: 0.3 } }], gain: -4, pan: 0, mute: false, solo: false },
+    { id: 'tChords', name: 'Chords', color: 8, kind: 'synth', inst: { type: 'poly', params: INST_PRESETS.find(p => p.name === 'Soft Piano')!.params }, fx: [{ type: 'reverb', on: true, params: { size: 2.8, mix: 0.3 } }], gain: -4, pan: 0, mute: false, solo: false },
     { id: 'tLead', name: 'Lead', color: 3, kind: 'synth', inst: { type: 'poly', params: INST_PRESETS.find(p => p.name === 'Neon Saw Lead')!.params }, fx: [{ type: 'delay', on: true, params: { time: 2, fb: 0.35, mix: 0.25 } }], gain: -5, pan: 0, mute: false, solo: false },
   ],
   scenes: [
@@ -638,7 +639,7 @@ export function demoProject(): ProjectJSON {
     tracks: [
       { id: 'tDrums', name: 'Drums', color: 0, kind: 'drum', inst: { type: 'drum', params: DRUM_KITS[0].params }, fx: [{ type: 'comp', on: true, params: { thresh: -18, ratio: 4, attack: 0.01, release: 0.18 } }], gain: 0, pan: 0, mute: false, solo: false },
       { id: 'tBass', name: 'Bass', color: 6, kind: 'synth', inst: { type: 'mono', params: INST_PRESETS.find(p => p.name === 'Sub Bass')!.params }, fx: [{ type: 'dist', on: true, params: { amt: 0.15, mix: 0.5 } }], gain: -2, pan: 0, mute: false, solo: false },
-      { id: 'tChords', name: 'Chords', color: 8, kind: 'synth', inst: { type: 'poly', params: INST_PRESETS.find(p => p.name === 'Warm Pad')!.params }, fx: [{ type: 'chorus', on: true, params: { rate: 0.8, depth: 0.5, mix: 0.4 } }, { type: 'reverb', on: true, params: { size: 3.2, mix: 0.32 } }], gain: -5, pan: -0.1, mute: false, solo: false },
+      { id: 'tChords', name: 'Chords', color: 8, kind: 'synth', inst: { type: 'poly', params: INST_PRESETS.find(p => p.name === 'Soft Piano')!.params }, fx: [{ type: 'chorus', on: true, params: { rate: 0.8, depth: 0.5, mix: 0.2 } }, { type: 'reverb', on: true, params: { size: 3.2, mix: 0.32 } }], gain: -5, pan: -0.1, mute: false, solo: false },
       { id: 'tLead', name: 'Lead', color: 3, kind: 'synth', inst: { type: 'pluck', params: INST_PRESETS.find(p => p.name === 'Classic Pluck')!.params }, fx: [{ type: 'delay', on: true, params: { time: 3, fb: 0.45, mix: 0.35 } }, { type: 'reverb', on: true, params: { size: 2.2, mix: 0.25 } }], gain: -3, pan: 0.12, mute: false, solo: false },
     ],
     scenes: [
