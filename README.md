@@ -2,7 +2,7 @@
 
 **Make a song together.** A lightweight, Ableton-inspired DAW that lives in your browser — with Google-Docs-style real-time collaboration. Launch clips, sculpt synths, arrange a track, and share a link so friends can edit the same song *live*, note by note.
 
-**▶ Play it now: https://zenithb.github.io/synthtagram/**
+**▶ Play it now: https://synthtagram.vercel.app**
 
 No install, no account, no server. Your project autosaves locally; sharing creates a peer-to-peer room over WebRTC.
 
@@ -78,7 +78,7 @@ npm run dev        # http://localhost:5173
 npm run build      # production build to dist/
 ```
 
-Deploys to GitHub Pages with `npm run deploy` (builds are pushed to the `gh-pages` branch).
+Hosted on [Vercel](https://vercel.com) — pushes to `main` auto-deploy to https://synthtagram.vercel.app (Vite `base: '/'`).
 
 ## Architecture (1 minute version)
 
