@@ -117,6 +117,8 @@ function yTrack(t: TrackJSON) {
   m.set('pan', t.pan)
   m.set('mute', t.mute)
   m.set('solo', t.solo)
+  m.set('sendA', 0)
+  m.set('sendB', 0)
   return m
 }
 
@@ -379,6 +381,218 @@ export function setLfoTarget(trackId: string, lfoId: string, dest: string, fxId:
 
 export function lfosOf(t: Y.Map<any>): Y.Array<Y.Map<any>> | undefined {
   return t.get('lfos') as Y.Array<Y.Map<any>> | undefined
+}
+
+// ---------- send / return buses ----------
+export const returns = doc.getArray<Y.Map<any>>('returns')
+
+function yReturn(name: string, fxType: string, params: Record<string, number>) {
+  const m = new Y.Map<any>()
+  m.set('id', id8())
+  m.set('name', name)
+  m.set('fxType', fxType)
+  const pm = new Y.Map<number>()
+  for (const [k, v] of Object.entries(params)) pm.set(k, v)
+  m.set('params', pm)
+  m.set('gain', 0)
+  return m
+}
+
+export function ensureReturns() {
+  if (returns.length > 0) return
+  mutate('Init returns', () => {
+    returns.push([
+      yReturn('A · Reverb', 'reverb', { size: 3.6, mix: 1 }),
+      yReturn('B · Delay', 'pingpong', { time: 3, fb: 0.4, mix: 1 }),
+    ])
+  })
+}
+export function returnAt(i: number): Y.Map<any> | undefined { return returns.get(i) }
+export function setReturnGain(i: number, v: number) {
+  mutate('Return volume', () => returns.get(i)?.set('gain', v))
+}
+export function setReturnFxType(i: number, type: string, params: Record<string, number>) {
+  mutate('Return effect', () => {
+    const r = returns.get(i); if (!r) return
+    r.set('fxType', type)
+    const pm = new Y.Map<number>()
+    for (const [k, v] of Object.entries(params)) pm.set(k, v)
+    r.set('params', pm)
+  })
+}
+export function setReturnParam(i: number, key: string, v: number) {
+  mutate('Return effect', () => (returns.get(i)?.get('params') as Y.Map<number>)?.set(key, v))
+}
+export function setSend(trackId: string, which: 'sendA' | 'sendB', v: number) {
+  mutate('Send level', () => trackById(trackId)?.set(which, v))
+}
+
+// ---------- macro racks ----------
+function macrosArr(t: Y.Map<any>): Y.Array<Y.Map<any>> {
+  let a = t.get('macros') as Y.Array<Y.Map<any>> | undefined
+  if (!a) {
+    a = new Y.Array<Y.Map<any>>()
+    const fresh: Y.Map<any>[] = []
+    for (let i = 0; i < 8; i++) {
+      const m = new Y.Map<any>()
+      m.set('name', `Macro ${i + 1}`)
+      m.set('value', 0)
+      m.set('targets', new Y.Array<Y.Map<any>>())
+      fresh.push(m)
+    }
+    a.push(fresh)
+    t.set('macros', a)
+  }
+  return a
+}
+export function ensureMacros(trackId: string) {
+  mutate('Init macros', () => { const t = trackById(trackId); if (t) macrosArr(t) })
+}
+export function macrosOf(t: Y.Map<any>): Y.Array<Y.Map<any>> | undefined {
+  return t.get('macros') as Y.Array<Y.Map<any>> | undefined
+}
+/** Set a macro's value AND write every mapped parameter (lerp across its range). */
+export function setMacroValue(trackId: string, idx: number, value: number, ranges: (key: string, dest: string, fxId: string, pkey: string) => [number, number]) {
+  mutate('Macro', () => {
+    const t = trackById(trackId); if (!t) return
+    const m = macrosArr(t).get(idx); if (!m) return
+    m.set('value', value)
+    const targets = m.get('targets') as Y.Array<Y.Map<any>>
+    targets.forEach(tg => {
+      const dest = tg.get('dest'), fxId = tg.get('fxId') || '', pkey = tg.get('pkey')
+      const [lo, hi] = ranges('', dest, fxId, pkey)
+      const v = lo + (hi - lo) * value
+      if (dest === 'inst') (t.get('inst').get('params') as Y.Map<number>).set(pkey, v)
+      else if (dest === 'mix') t.set(pkey, v)
+      else {
+        const i = fxIndex(t, fxId)
+        if (i >= 0) ((t.get('fx') as Y.Array<Y.Map<any>>).get(i).get('params') as Y.Map<number>).set(pkey, v)
+      }
+    })
+  })
+}
+export function addMacroTarget(trackId: string, idx: number, dest: string, fxId: string, pkey: string) {
+  mutate('Map macro', () => {
+    const t = trackById(trackId); if (!t) return
+    const m = macrosArr(t).get(idx); if (!m) return
+    const tg = new Y.Map<any>()
+    tg.set('dest', dest); tg.set('fxId', fxId); tg.set('pkey', pkey)
+    ;(m.get('targets') as Y.Array<Y.Map<any>>).push([tg])
+  })
+}
+export function clearMacroTargets(trackId: string, idx: number) {
+  mutate('Clear macro', () => {
+    const t = trackById(trackId); if (!t) return
+    const m = macrosArr(t).get(idx); if (!m) return
+    const targets = m.get('targets') as Y.Array<Y.Map<any>>
+    targets.delete(0, targets.length)
+  })
+}
+export function setMacroName(trackId: string, idx: number, name: string) {
+  mutate('Rename macro', () => { const t = trackById(trackId); if (t) macrosArr(t).get(idx)?.set('name', name) })
+}
+
+// ---------- live MIDI effects ----------
+function midifxArr(t: Y.Map<any>): Y.Array<Y.Map<any>> {
+  let a = t.get('midifx') as Y.Array<Y.Map<any>> | undefined
+  if (!a) { a = new Y.Array<Y.Map<any>>(); t.set('midifx', a) }
+  return a
+}
+export function midifxOf(t: Y.Map<any>): Y.Array<Y.Map<any>> | undefined {
+  return t.get('midifx') as Y.Array<Y.Map<any>> | undefined
+}
+function midifxIndex(t: Y.Map<any>, id: string) {
+  const a = t.get('midifx') as Y.Array<Y.Map<any>> | undefined
+  if (!a) return -1
+  for (let i = 0; i < a.length; i++) if (a.get(i).get('id') === id) return i
+  return -1
+}
+export function addMidiFx(trackId: string, type: string, params: Record<string, number>) {
+  mutate(`Add MIDI ${type}`, () => {
+    const t = trackById(trackId); if (!t) return
+    const m = new Y.Map<any>()
+    m.set('id', id8()); m.set('type', type); m.set('on', true)
+    const pm = new Y.Map<number>()
+    for (const [k, v] of Object.entries(params)) pm.set(k, v)
+    m.set('params', pm)
+    midifxArr(t).push([m])
+  })
+}
+export function removeMidiFx(trackId: string, id: string) {
+  mutate('Remove MIDI effect', () => {
+    const t = trackById(trackId); if (!t) return
+    const i = midifxIndex(t, id)
+    if (i >= 0) (t.get('midifx') as Y.Array<Y.Map<any>>).delete(i)
+  })
+}
+export function setMidiFxParam(trackId: string, id: string, key: string, v: number) {
+  mutate('Tweak MIDI effect', () => {
+    const t = trackById(trackId); if (!t) return
+    const i = midifxIndex(t, id)
+    if (i >= 0) ((t.get('midifx') as Y.Array<Y.Map<any>>).get(i).get('params') as Y.Map<number>).set(key, v)
+  })
+}
+export function setMidiFxOn(trackId: string, id: string, on: boolean) {
+  mutate(on ? 'Enable MIDI effect' : 'Bypass MIDI effect', () => {
+    const t = trackById(trackId); if (!t) return
+    const i = midifxIndex(t, id)
+    if (i >= 0) (t.get('midifx') as Y.Array<Y.Map<any>>).get(i).set('on', on)
+  })
+}
+
+// ---------- clip automation envelopes ----------
+export function clipEnv(clipMap: Y.Map<any>): Y.Map<any> | undefined {
+  return clipMap.get('env') as Y.Map<any> | undefined
+}
+export function setEnvPoints(clipMap: Y.Map<any>, key: string, points: { t: number; v: number }[]) {
+  mutate('Edit automation', () => {
+    let env = clipMap.get('env') as Y.Map<any> | undefined
+    if (!env) { env = new Y.Map<any>(); clipMap.set('env', env) }
+    if (points.length === 0) { env.delete(key); return }
+    const arr2 = new Y.Array<any>()
+    arr2.push(points.slice().sort((a, b) => a.t - b.t).map(p => ({ t: Math.round(p.t), v: p.v })))
+    env.set(key, arr2)
+  })
+}
+export function envPoints(clipMap: Y.Map<any>, key: string): { t: number; v: number }[] {
+  const env = clipMap.get('env') as Y.Map<any> | undefined
+  const arr2 = env?.get(key) as Y.Array<any> | undefined
+  return arr2 ? arr2.toArray().map(p => ({ ...p })) : []
+}
+export function envKeys(clipMap: Y.Map<any>): string[] {
+  const env = clipMap.get('env') as Y.Map<any> | undefined
+  if (!env) return []
+  const out: string[] = []
+  env.forEach((_v, k) => out.push(k))
+  return out
+}
+
+// ---------- follow actions (session clips) ----------
+export function setFollow(clipMap: Y.Map<any>, patch: Record<string, any>) {
+  mutate('Follow action', () => {
+    let f = clipMap.get('follow') as Y.Map<any> | undefined
+    if (!f) {
+      f = new Y.Map<any>()
+      f.set('on', false); f.set('bars', 1); f.set('action', 0); f.set('chance', 1)
+      clipMap.set('follow', f)
+    }
+    for (const [k, v] of Object.entries(patch)) f.set(k, v)
+  })
+}
+export function followOf(clipMap: Y.Map<any>): { on: boolean; bars: number; action: number; chance: number } | null {
+  const f = clipMap.get('follow') as Y.Map<any> | undefined
+  if (!f) return null
+  return { on: !!f.get('on'), bars: f.get('bars') ?? 1, action: f.get('action') ?? 0, chance: f.get('chance') ?? 1 }
+}
+
+// ---------- sampler reference ----------
+export function setSamplerSample(trackId: string, sampleId: string, name: string) {
+  mutate('Load sample', () => {
+    const t = trackById(trackId); if (!t) return
+    const inst = t.get('inst') as Y.Map<any>
+    inst.set('sampleId', sampleId)
+    inst.set('sampleName', name)
+  })
 }
 
 // ---------- scenes ----------

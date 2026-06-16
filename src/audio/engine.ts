@@ -10,10 +10,12 @@ import * as Y from 'yjs'
 import { BAR, STEP16, Note, clamp } from '../types'
 import {
   meta, tracks, clips, arr, clipKey, notesOf, addNote, updateNotes,
-  createClip, trackById,
+  createClip, trackById, returns, ensureReturns, midifxOf, envKeys, envPoints, followOf, scenes, sceneIndex,
 } from '../state/doc'
 import { makeInstrument, makeEffect, Inst, Fx } from './devices'
-import { instSchema, fxSchema, lfoShapeValue, LFO_DIV_TICKS } from './schema'
+import { instSchema, fxSchema, lfoShapeValue, LFO_DIV_TICKS, mixSpec, midiFxSchema, ARP_DIV_TICKS } from './schema'
+import { getSampleBuffer, onSampleReady } from './samples'
+import { snapToScale } from '../theory'
 import { setUI, toast, ui } from '../state/store'
 
 const STOP = '__stop__'
@@ -26,6 +28,8 @@ type BuiltTrack = {
   fx: BuiltFx[]
   channel: Tone.Channel
   meter: Tone.Meter
+  sendA: Tone.Gain
+  sendB: Tone.Gain
   part: Tone.Part | null
   partKey: string | null
   partStartTicks: number
@@ -34,6 +38,8 @@ type BuiltTrack = {
   queuedPart: Tone.Part | null
   unobserve: (() => void) | null
 }
+
+type BuiltReturn = { id: string; fx: Fx; channel: Tone.Channel }
 
 class Engine {
   started = false
@@ -50,10 +56,16 @@ class Engine {
   private arrTimer: ReturnType<typeof setTimeout> | null = null
   private pendingRec = new Map<number, { clipMap: Y.Map<any>; startInClip: number; vel: number }>()
 
-  // ---- LFO modulation (local per client; runs at frame rate) ----
+  // ---- LFO / automation modulation (local per client; runs at frame rate) ----
   private modRAF = 0
   private lfoVals = new Map<string, number>()  // lfoId -> current raw value [-1,1]
   private activeMod = new Map<string, { tid: string; dest: string; fxId: string; pkey: string }>()
+
+  // ---- send/return buses + master analysers ----
+  private builtReturns: BuiltReturn[] = []
+  private masterFFT!: Tone.Analyser
+  private masterWave!: Tone.Analyser
+  private followTimers = new Map<string, number>()
 
   // ---- tiny emitter so React can follow launch-state changes ----
   version = 0
@@ -94,8 +106,24 @@ class Engine {
     this.master = new Tone.Channel({ volume: meta.get('masterGain') ?? 0 })
     const limiter = new Tone.Limiter(-1)
     this.masterMeter = new Tone.Meter({ smoothing: 0.85 })
+    this.masterFFT = new Tone.Analyser('fft', 1024)
+    this.masterWave = new Tone.Analyser('waveform', 1024)
     this.master.chain(limiter, Tone.getDestination())
     this.master.connect(this.masterMeter)
+    this.master.connect(this.masterFFT)
+    this.master.connect(this.masterWave)
+
+    ensureReturns()
+    this.buildReturns()
+    returns.observeDeep(this.onReturnsDeep)
+    onSampleReady(id => {
+      // a sample finished loading/decoding → rebuild any sampler using it
+      tracks.forEach(t => {
+        if (t.get('inst')?.get('type') === 'sampler' && t.get('inst')?.get('sampleId') === id) {
+          this.scheduleRebuildTrack(t.get('id'))
+        }
+      })
+    })
 
     this.metro = new Tone.Synth({
       oscillator: { type: 'sine' },
@@ -142,6 +170,30 @@ class Engine {
     return undefined
   }
 
+  /** Resolve a modulation/automation target to its spec, base value and live setter. */
+  private resolveTarget(t: Y.Map<any>, rec: BuiltTrack, dest: string, fxId: string, pkey: string) {
+    if (dest === 'inst') {
+      const spec = instSchema(t.get('inst').get('type')).params.find(s => s.key === pkey)
+      const base = (t.get('inst').get('params') as Y.Map<number>).get(pkey)
+      if (!spec || typeof base !== 'number') return null
+      return { spec, base, setter: (v: number) => rec.inst.set(pkey, v) }
+    }
+    if (dest === 'mix') {
+      const spec = mixSpec(pkey)
+      const base = t.get(pkey)
+      if (!spec || typeof base !== 'number') return null
+      const setter = (v: number) => { if (pkey === 'gain') rec.channel.volume.rampTo(v, 0.02); else rec.channel.pan.rampTo(v, 0.02) }
+      return { spec, base, setter }
+    }
+    const fxMap = this.findFxMap(t, fxId)
+    const bf = rec.fx.find(f => f.id === fxId)
+    if (!fxMap || !bf) return null
+    const spec = fxSchema(fxMap.get('type')).params.find(s => s.key === pkey)
+    const base = (fxMap.get('params') as Y.Map<number>).get(pkey)
+    if (!spec || typeof base !== 'number') return null
+    return { spec, base, setter: (v: number) => bf.fx.set(pkey, v) }
+  }
+
   private applyModulation() {
     const newActive = new Map<string, { tid: string; dest: string; fxId: string; pkey: string }>()
     const playing = this.transport.state === 'started'
@@ -149,67 +201,90 @@ class Engine {
     const audioTime = Tone.now()
 
     for (const t of tracks.toArray()) {
-      const lfos = t.get('lfos') as Y.Array<Y.Map<any>> | undefined
-      if (!lfos || lfos.length === 0) continue
       const tid = t.get('id') as string
       const rec = this.built.get(tid)
       if (!rec) continue
 
-      lfos.forEach(lfo => {
-        const pkey = lfo.get('pkey') as string
-        const dest = lfo.get('dest') as string
+      // tempo-synced effect ticks (sidechain ducker, etc.)
+      const bpm = this.transport.bpm.value
+      rec.fx.forEach(bf => bf.fx.tick?.(syncedPos, playing, bpm))
+
+      const controlled = new Map<string, { dest: string; fxId: string; pkey: string }>()
+      const autoNorm = new Map<string, number>()
+      const lfoOff = new Map<string, number>()
+
+      // ---- automation: the playing session clip's envelopes ----
+      if (this.mode === 'session' && rec.partKey && playing) {
+        const clipMap = clips.get(rec.partKey) as Y.Map<any> | undefined
+        if (clipMap) {
+          const loop = rec.partLoopTicks || BAR
+          const pos = (((this.transport.ticks - rec.partStartTicks) % loop) + loop) % loop
+          for (const k of envKeys(clipMap)) {
+            const pts = envPoints(clipMap, k)
+            if (!pts.length) continue
+            autoNorm.set(k, this.envValueAt(pts, pos, loop))
+            const [dest, fxId, pkey] = k.split('|')
+            controlled.set(k, { dest, fxId: fxId || '', pkey })
+          }
+        }
+      }
+
+      // ---- LFOs: add a bipolar offset on top ----
+      const lfos = t.get('lfos') as Y.Array<Y.Map<any>> | undefined
+      lfos?.forEach(lfo => {
         const raw = lfoShapeValue(lfo.get('shape') | 0,
           lfo.get('sync')
             ? syncedPos / (LFO_DIV_TICKS[lfo.get('rate') | 0] || 384) + (lfo.get('phase') ?? 0)
             : audioTime * (lfo.get('hz') ?? 1) + (lfo.get('phase') ?? 0))
         this.lfoVals.set(lfo.get('id'), raw)
+        const pkey = lfo.get('pkey') as string
+        const dest = lfo.get('dest') as string
         if (!lfo.get('on') || !pkey || !dest) return
-
-        const depth = lfo.get('depth') ?? 0.5
         const fxId = (lfo.get('fxId') as string) || ''
-        let spec, base: number | undefined, setter: ((v: number) => void) | undefined
-        if (dest === 'inst') {
-          spec = instSchema(t.get('inst').get('type')).params.find(s => s.key === pkey)
-          base = (t.get('inst').get('params') as Y.Map<number>).get(pkey)
-          setter = v => rec.inst.set(pkey, v)
-        } else {
-          const fxMap = this.findFxMap(t, fxId)
-          const bf = rec.fx.find(f => f.id === fxId)
-          if (!fxMap || !bf) return
-          spec = fxSchema(fxMap.get('type')).params.find(s => s.key === pkey)
-          base = (fxMap.get('params') as Y.Map<number>).get(pkey)
-          setter = v => bf.fx.set(pkey, v)
-        }
-        if (!spec || typeof base !== 'number' || !setter) return
-        const value = clamp(base + raw * depth * (spec.max - spec.min) * 0.5, spec.min, spec.max)
-        setter(value)
-        const akey = `${tid}|${dest}|${fxId}|${pkey}`
-        newActive.set(akey, { tid, dest, fxId, pkey })
+        const k = `${dest}|${fxId}|${pkey}`
+        lfoOff.set(k, (lfoOff.get(k) ?? 0) + raw * (lfo.get('depth') ?? 0.5))
+        controlled.set(k, { dest, fxId, pkey })
       })
+
+      // ---- combine automation base + LFO offset, apply once per param ----
+      for (const [k, tg] of controlled) {
+        const r = this.resolveTarget(t, rec, tg.dest, tg.fxId, tg.pkey)
+        if (!r) continue
+        const base = autoNorm.has(k) ? r.spec.min + autoNorm.get(k)! * (r.spec.max - r.spec.min) : r.base
+        const off = (lfoOff.get(k) ?? 0) * (r.spec.max - r.spec.min) * 0.5
+        r.setter(clamp(base + off, r.spec.min, r.spec.max))
+        newActive.set(`${tid}|${k}`, { tid, dest: tg.dest, fxId: tg.fxId, pkey: tg.pkey })
+      }
     }
 
-    // a param that was modulated last frame but isn't now → snap back to base
+    // params modulated last frame but not now → snap back to their base value
     for (const [k, m] of this.activeMod) {
       if (!newActive.has(k)) this.restoreParam(m)
     }
     this.activeMod = newActive
   }
 
+  private envValueAt(pts: { t: number; v: number }[], pos: number, loop: number): number {
+    if (pts.length === 1) return pts[0].v
+    if (pos <= pts[0].t) return pts[0].v
+    const last = pts[pts.length - 1]
+    if (pos >= last.t) return last.v
+    for (let i = 0; i < pts.length - 1; i++) {
+      const a = pts[i], b = pts[i + 1]
+      if (pos >= a.t && pos <= b.t) {
+        const f = (pos - a.t) / Math.max(1, b.t - a.t)
+        return a.v + (b.v - a.v) * f
+      }
+    }
+    return last.v
+  }
+
   private restoreParam(m: { tid: string; dest: string; fxId: string; pkey: string }) {
     const t = trackById(m.tid)
     const rec = this.built.get(m.tid)
     if (!t || !rec) return
-    if (m.dest === 'inst') {
-      const base = (t.get('inst').get('params') as Y.Map<number>).get(m.pkey)
-      if (typeof base === 'number') rec.inst.set(m.pkey, base)
-    } else {
-      const fxMap = this.findFxMap(t, m.fxId)
-      const bf = rec.fx.find(f => f.id === m.fxId)
-      if (fxMap && bf) {
-        const base = (fxMap.get('params') as Y.Map<number>).get(m.pkey)
-        if (typeof base === 'number') bf.fx.set(m.pkey, base)
-      }
-    }
+    const r = this.resolveTarget(t, rec, m.dest, m.fxId, m.pkey)
+    if (r) r.setter(r.base)
   }
 
   /** Live LFO output [-1,1] for the UI indicator. */
@@ -217,11 +292,37 @@ class Engine {
     return this.lfoVals.get(lfoId) ?? 0
   }
 
+  // ---------------- master analysers ----------------
+  getSpectrum(): Float32Array {
+    return (this.masterFFT?.getValue() as Float32Array) ?? new Float32Array(0)
+  }
+  getWaveform(): Float32Array {
+    return (this.masterWave?.getValue() as Float32Array) ?? new Float32Array(0)
+  }
+  /** Rough fundamental-frequency estimate (autocorrelation) for the tuner. */
+  getPitchHz(): number {
+    const buf = this.getWaveform()
+    if (!buf.length) return 0
+    const sr = this.sampleRate || 44100
+    let rms = 0
+    for (let i = 0; i < buf.length; i++) rms += buf[i] * buf[i]
+    if (Math.sqrt(rms / buf.length) < 0.01) return 0
+    let bestLag = -1, bestCorr = 0
+    for (let lag = 8; lag < buf.length / 2; lag++) {
+      let c = 0
+      for (let i = 0; i < buf.length / 2; i++) c += buf[i] * buf[i + lag]
+      if (c > bestCorr) { bestCorr = c; bestLag = lag }
+    }
+    return bestLag > 0 ? sr / bestLag : 0
+  }
+
   // ---------------- graph building ----------------
 
   private buildTrack(t: Y.Map<any>) {
     const tid = t.get('id') as string
-    const inst = makeInstrument(t.get('inst').get('type'), (t.get('inst').get('params') as Y.Map<number>).toJSON())
+    const it = t.get('inst') as Y.Map<any>
+    const buf = it.get('type') === 'sampler' ? getSampleBuffer(it.get('sampleId') || '') : undefined
+    const inst = makeInstrument(it.get('type'), (it.get('params') as Y.Map<number>).toJSON(), buf)
     const fx: BuiltFx[] = []
     ;(t.get('fx') as Y.Array<Y.Map<any>>).forEach(f => {
       if (f.get('on')) fx.push({ id: f.get('id'), type: f.get('type'), fx: makeEffect(f.get('type'), (f.get('params') as Y.Map<number>).toJSON()) })
@@ -233,13 +334,65 @@ class Engine {
     inst.out.chain(...(nodes as [Tone.ToneAudioNode]))
     channel.connect(this.master)
     channel.connect(meter)
+    // post-fader sends feed the return buses
+    const sendA = new Tone.Gain(t.get('sendA') ?? 0)
+    const sendB = new Tone.Gain(t.get('sendB') ?? 0)
+    channel.connect(sendA)
+    channel.connect(sendB)
     const rec: BuiltTrack = {
-      id: tid, kind: t.get('kind'), inst, fx, channel, meter,
+      id: tid, kind: t.get('kind'), inst, fx, channel, meter, sendA, sendB,
       part: null, partKey: null, partStartTicks: 0, partLoopTicks: BAR,
       queuedKey: null, queuedPart: null, unobserve: null,
     }
     this.built.set(tid, rec)
+    this.wireSends(rec)
     return rec
+  }
+
+  private wireSends(rec: BuiltTrack) {
+    try { rec.sendA.disconnect() } catch { /* ok */ }
+    try { rec.sendB.disconnect() } catch { /* ok */ }
+    if (this.builtReturns[0]) rec.sendA.connect(this.builtReturns[0].fx.node)
+    if (this.builtReturns[1]) rec.sendB.connect(this.builtReturns[1].fx.node)
+  }
+
+  // ---------------- return buses ----------------
+  private buildReturns() {
+    this.builtReturns.forEach(r => { try { r.fx.dispose(); r.channel.dispose() } catch { /* ok */ } })
+    this.builtReturns = []
+    returns.forEach(r => {
+      const fx = makeEffect(r.get('fxType'), (r.get('params') as Y.Map<number>).toJSON())
+      const channel = new Tone.Channel({ volume: r.get('gain') ?? 0 })
+      fx.node.connect(channel)
+      channel.connect(this.master)
+      this.builtReturns.push({ id: r.get('id'), fx, channel })
+    })
+    this.built.forEach(rec => this.wireSends(rec))
+  }
+
+  private onReturnsDeep = (events: Y.YEvent<any>[]) => {
+    if (!this.started) return
+    let structural = false
+    for (const ev of events) {
+      const path = ev.path
+      if (path.length === 0) { structural = true; continue }
+      const idx = path[0] as number
+      const br = this.builtReturns[idx]
+      const rm = returns.get(idx)
+      if (!br || !rm) { structural = true; continue }
+      if (path.length === 1) {
+        ev.changes.keys.forEach((_c, key) => {
+          if (key === 'gain') br.channel.volume.rampTo(rm.get('gain') ?? 0, 0.05)
+          else if (key === 'fxType') structural = true
+        })
+      } else if (path[path.length - 1] === 'params' || path[1] === 'params') {
+        ev.changes.keys.forEach((_c, key) => {
+          const v = (ev.target as Y.Map<number>).get(key)
+          if (typeof v === 'number') br.fx.set(key, v)
+        })
+      }
+    }
+    if (structural) this.buildReturns()
   }
 
   private disposeTrack(rec: BuiltTrack) {
@@ -249,6 +402,8 @@ class Engine {
       rec.fx.forEach(f => f.fx.dispose())
       rec.channel.dispose()
       rec.meter.dispose()
+      rec.sendA.dispose()
+      rec.sendB.dispose()
     } catch { /* dispose races are harmless */ }
     this.built.delete(rec.id)
   }
@@ -307,8 +462,13 @@ class Engine {
           else if (key === 'pan') rec.channel.pan.rampTo(t.get('pan'), 0.05)
           else if (key === 'mute') rec.channel.mute = !!t.get('mute')
           else if (key === 'solo') rec.channel.solo = !!t.get('solo')
+          else if (key === 'sendA') rec.sendA.gain.rampTo(t.get('sendA') ?? 0, 0.03)
+          else if (key === 'sendB') rec.sendB.gain.rampTo(t.get('sendB') ?? 0, 0.03)
           else if (key === 'inst' || key === 'fx') structural.add(tid)
+          else if (key === 'midifx') this.refreshPart(rec)
         })
+      } else if (path[1] === 'midifx') {
+        this.refreshPart(rec)
       } else if (path[1] === 'inst') {
         if (path[path.length - 1] === 'params') {
           ev.changes.keys.forEach((_c, key) => {
@@ -399,8 +559,80 @@ class Engine {
 
   // ---------------- session playback ----------------
 
+  /** Build the scheduled note events for a clip, applying the track's live MIDI fx. */
+  private buildEvents(t: Y.Map<any> | undefined, clipMap: Y.Map<any>) {
+    let notes = notesOf(clipMap).map(([, n]) => ({ ...n }))
+    if (t) notes = this.applyMidiFx(t, notes, clipMap.get('len') ?? BAR)
+    return notes.map(n => ({ time: `${n.s}i`, ...n }))
+  }
+
+  /** Transform a clip's note list through the track's MIDI-fx chain (offline expansion). */
+  private applyMidiFx(t: Y.Map<any>, notes: Note[], loopLen: number): Note[] {
+    const chain = midifxOf(t)
+    if (!chain || chain.length === 0) return notes
+    const isDrum = t.get('kind') === 'drum'
+    const root = meta.get('root') ?? 9
+    const scaleId = meta.get('scale') ?? 'minor'
+    let out = notes
+    chain.forEach(d => {
+      if (!d.get('on')) return
+      const type = d.get('type')
+      const p = (d.get('params') as Y.Map<number>)
+      if (type === 'scale' && !isDrum) {
+        out = out.map(n => ({ ...n, p: snapToScale(n.p, root, scaleId) }))
+      } else if (type === 'chord' && !isDrum) {
+        const ivs = [0, p.get('i1') ?? 0, p.get('i2') ?? 0, p.get('i3') ?? 0].filter((v, i) => i === 0 || v !== 0)
+        const next: Note[] = []
+        out.forEach(n => ivs.forEach(iv => next.push({ ...n, p: clamp(n.p + iv, 0, 127), v: iv === 0 ? n.v : n.v * 0.85 })))
+        out = next
+      } else if (type === 'velo') {
+        const s = p.get('scale') ?? 1, r = p.get('rand') ?? 0
+        out = out.map(n => ({ ...n, v: clamp(n.v * s + (Math.random() * 2 - 1) * r, 0.05, 1) }))
+      } else if (type === 'rand') {
+        const ch = p.get('chance') ?? 1, oc = p.get('octave') ?? 0
+        out = out.flatMap(n => {
+          if (ch < 1 && Math.random() > ch) return []
+          let pitch = n.p
+          if (oc > 0 && Math.random() < oc) pitch = clamp(pitch + (Math.random() < 0.5 ? 12 : -12), 0, 127)
+          return [{ ...n, p: pitch }]
+        })
+      } else if (type === 'arp' && !isDrum) {
+        out = this.arpExpand(out, p, loopLen)
+      }
+    })
+    return out
+  }
+
+  private arpExpand(notes: Note[], p: Y.Map<number>, loopLen: number): Note[] {
+    if (notes.length === 0) return notes
+    const step = ARP_DIV_TICKS[Math.max(0, Math.min(ARP_DIV_TICKS.length - 1, (p.get('rate') ?? 0) | 0))] || 48
+    const mode = (p.get('mode') ?? 0) | 0
+    const oct = Math.max(1, p.get('oct') ?? 1)
+    const gate = p.get('gate') ?? 0.8
+    // group notes that start together (a chord)
+    const groups = new Map<number, Note[]>()
+    notes.forEach(n => { const g = groups.get(n.s) ?? []; g.push(n); groups.set(n.s, g) })
+    const out: Note[] = []
+    groups.forEach(g => {
+      const end = Math.max(...g.map(n => n.s + n.d))
+      let seq = [...new Set(g.map(n => n.p))].sort((a, b) => a - b)
+      const ext: number[] = []
+      for (let o = 0; o < oct; o++) seq.forEach(pp => ext.push(pp + o * 12))
+      seq = ext
+      if (mode === 1) seq = seq.reverse()
+      else if (mode === 2 && seq.length > 2) seq = [...seq, ...seq.slice(1, -1).reverse()]
+      let i = 0
+      for (let t = g[0].s; t < end; t += step) {
+        const pitch = mode === 3 ? seq[Math.floor(Math.random() * seq.length)] : seq[i % seq.length]
+        out.push({ p: clamp(pitch, 0, 127), s: t, d: Math.max(6, step * gate), v: g[0].v, pr: g[0].pr })
+        i++
+      }
+    })
+    return out
+  }
+
   private makePart(rec: BuiltTrack, clipMap: Y.Map<any>): Tone.Part {
-    const events = notesOf(clipMap).map(([nid, n]) => ({ time: `${n.s}i`, nid, ...n }))
+    const events = this.buildEvents(trackById(rec.id), clipMap)
     const part = new Tone.Part((time, ev: any) => {
       if (ev.pr < 1 && Math.random() > ev.pr) return
       rec.inst.trigger(ev.p, Math.max(0.02, Tone.Ticks(ev.d).toSeconds()), time, ev.v)
@@ -411,6 +643,15 @@ class Engine {
     return part
   }
 
+  /** Re-derive a playing part's events (after a MIDI-fx change). */
+  private refreshPart(rec: BuiltTrack) {
+    if (!rec.part || !rec.partKey) return
+    const clipMap = clips.get(rec.partKey) as Y.Map<any> | undefined
+    if (!clipMap) return
+    rec.part.clear()
+    this.buildEvents(trackById(rec.id), clipMap).forEach(ev => rec.part!.add(ev as any))
+  }
+
   private observeClipForPart(rec: BuiltTrack, key: string, clipMap: Y.Map<any>) {
     const h = () => {
       const prev = this.partTimers.get(rec.id)
@@ -419,7 +660,7 @@ class Engine {
         this.partTimers.delete(rec.id)
         if (rec.partKey !== key || !rec.part) return
         rec.part.clear()
-        notesOf(clipMap).forEach(([nid, n]) => rec.part!.add({ time: `${n.s}i`, nid, ...n } as any))
+        this.buildEvents(trackById(rec.id), clipMap).forEach(ev => rec.part!.add(ev as any))
         rec.part.loopEnd = `${clipMap.get('len') ?? BAR}i`
         rec.partLoopTicks = clipMap.get('len') ?? BAR
       }, 120))
@@ -433,11 +674,57 @@ class Engine {
       try { rec.part.stop(); rec.part.dispose() } catch { /* ok */ }
     }
     this.cancelQueued(rec)
+    this.clearFollow(rec.id)
     rec.unobserve?.()
     rec.unobserve = null
     rec.part = null
     rec.partKey = null
     rec.queuedKey = null
+  }
+
+  private clearFollow(trackId: string) {
+    const ft = this.followTimers.get(trackId)
+    if (ft !== undefined) { this.transport.clear(ft); this.followTimers.delete(trackId) }
+  }
+
+  /** Arm a clip's follow action: after N bars, jump/stop per its config. */
+  private armFollow(trackId: string, sceneId: string, startTicks: number) {
+    this.clearFollow(trackId)
+    const clipMap = clips.get(clipKey(trackId, sceneId)) as Y.Map<any> | undefined
+    if (!clipMap) return
+    const f = followOf(clipMap)
+    if (!f || !f.on) return
+    const at = startTicks + Math.max(1, f.bars) * BAR
+    const id = this.transport.scheduleOnce(() => {
+      this.followTimers.delete(trackId)
+      const rec = this.built.get(trackId)
+      if (!rec || rec.partKey !== clipKey(trackId, sceneId)) return
+      if (f.chance < 1 && Math.random() > f.chance) { this.armFollow(trackId, sceneId, this.transport.ticks); return }
+      this.performFollow(trackId, sceneId, f.action)
+    }, `${at}i`)
+    this.followTimers.set(trackId, id)
+  }
+
+  private performFollow(trackId: string, sceneId: string, action: number) {
+    if (action === 5) { this.stopClip(trackId); return } // Stop
+    const withClip: { sid: string }[] = []
+    for (let i = 0; i < scenes.length; i++) {
+      const sid = scenes.get(i).get('id')
+      if (clips.get(clipKey(trackId, sid))) withClip.push({ sid })
+    }
+    if (!withClip.length) return
+    const pos = withClip.findIndex(w => w.sid === sceneId)
+    let target: { sid: string } | undefined
+    if (action === 0) target = withClip[(pos + 1) % withClip.length]                       // Next
+    else if (action === 1) target = withClip[(pos - 1 + withClip.length) % withClip.length] // Prev
+    else if (action === 2) target = withClip[0]                                              // First
+    else if (action === 3) target = withClip[Math.floor(Math.random() * withClip.length)]   // Any
+    else if (action === 4) {                                                                 // Random (other)
+      const others = withClip.filter(w => w.sid !== sceneId)
+      const pool = others.length ? others : withClip
+      target = pool[Math.floor(Math.random() * pool.length)]
+    }
+    if (target) this.launchClip(trackId, target.sid)
   }
 
   private cancelQueued(rec: BuiltTrack) {
@@ -498,6 +785,7 @@ class Engine {
       this.transport.ticks = 0 as any
       this.transport.start('+0.05')
       this.startPartNow(trackId, key)
+      this.armFollow(trackId, sceneId, 0)
       this.emit()
       return
     }
@@ -523,6 +811,7 @@ class Engine {
       rec.partStartTicks = atTicks
       rec.partLoopTicks = clipMap.get('len') ?? BAR
       this.observeClipForPart(rec, key, clipMap)
+      this.armFollow(trackId, sceneId, atTicks)
       if (old) setTimeout(() => { try { old.dispose() } catch { /* ok */ } }, 500)
       this.emit()
     }, atT)

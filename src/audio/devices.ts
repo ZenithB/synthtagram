@@ -5,7 +5,7 @@
 // stay clean; Drive additionally oversamples its waveshaper 4x.
 
 import * as Tone from 'tone'
-import { WAVES, DELAY_FRACTIONS } from './schema'
+import { WAVES, DELAY_FRACTIONS, DUCK_DIV_TICKS } from './schema'
 
 export type Inst = {
   out: Tone.ToneAudioNode
@@ -19,6 +19,7 @@ export type Inst = {
 export type Fx = {
   node: Tone.ToneAudioNode
   set: (key: string, v: number) => void
+  tick?: (posTicks: number, playing: boolean, bpm: number) => void
   dispose: () => void
 }
 
@@ -276,13 +277,41 @@ function makeDrum(p: Record<string, number>): Inst {
   }
 }
 
-export function makeInstrument(type: string, params: Record<string, number>): Inst {
+function makeSampler(p: Record<string, number>, buffer?: AudioBuffer): Inst {
+  const out = new Tone.Gain(0.9)
+  let tune = p.tune ?? 0
+  if (!buffer) {
+    // no sample loaded (or not transferred to this peer yet) → silent but valid
+    return { out, set: () => {}, noteOn: () => {}, noteOff: () => {}, trigger: () => {}, dispose: () => out.dispose() }
+  }
+  const sampler = new Tone.Sampler({
+    urls: { C3: new Tone.ToneAudioBuffer(buffer) },
+    attack: p.attack ?? 0.005,
+    release: p.release ?? 0.4,
+  }).connect(out)
+  const hz = (pp: number) => Tone.Frequency(pp + tune, 'midi').toFrequency()
+  return {
+    out,
+    set: (k, v) => {
+      if (k === 'tune') tune = v
+      else if (k === 'attack') sampler.attack = v
+      else if (k === 'release') sampler.release = v
+    },
+    noteOn: (pp, vel) => sampler.triggerAttack(hz(pp), undefined, vel),
+    noteOff: pp => sampler.triggerRelease(hz(pp)),
+    trigger: (pp, dur, time, vel) => sampler.triggerAttackRelease(hz(pp), dur, time, vel),
+    dispose: () => { sampler.dispose(); out.dispose() },
+  }
+}
+
+export function makeInstrument(type: string, params: Record<string, number>, buffer?: AudioBuffer): Inst {
   switch (type) {
     case 'fm': return makeFm(params)
     case 'mono': return makeMono(params)
     case 'pluck': return makePluck(params)
     case 'keys': return makeKeys(params)
     case 'duo': return makeDuo(params)
+    case 'sampler': return makeSampler(params, buffer)
     case 'drum': return makeDrum(params)
     default: return makePoly(params)
   }
@@ -495,6 +524,29 @@ export function makeEffect(type: string, p: Record<string, number>): Fx {
         set: (k, v) => {
           if (k === 'amt') node.frequency.value = v
           else node.wet.value = v
+        },
+        dispose: () => node.dispose(),
+      }
+    }
+    case 'duck': {
+      // tempo-synced volume ducking ("sidechain pump"): gain dips on each beat
+      // boundary and recovers over the cycle. Driven by the engine frame tick
+      // so it stays locked to the transport with no clock drift.
+      const node = new Tone.Gain(1)
+      let amount = p.amount, curve = p.curve, rate = p.rate | 0
+      return {
+        node,
+        set: (k, v) => {
+          if (k === 'amount') amount = v
+          else if (k === 'curve') curve = v
+          else if (k === 'rate') rate = v | 0
+        },
+        tick: posTicks => {
+          const cyc = DUCK_DIV_TICKS[Math.max(0, Math.min(DUCK_DIV_TICKS.length - 1, rate))] || 96
+          const phase = (((posTicks % cyc) + cyc) % cyc) / cyc
+          const rec = Math.pow(phase, 0.35 + curve * 1.6) // recovery shape
+          const g = (1 - amount) + amount * rec
+          node.gain.setTargetAtTime(Math.max(0, g), Tone.now(), 0.004)
         },
         dispose: () => node.dispose(),
       }

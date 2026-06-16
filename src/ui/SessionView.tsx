@@ -25,6 +25,75 @@ import { applyPreset, applyDrumKit } from './actions'
 
 const PAN_SPEC = { key: 'pan', label: 'Pan', min: -1, max: 1, def: 0, fmt: (v: number) => (Math.abs(v) < 0.02 ? 'C' : v < 0 ? `${Math.round(-v * 50)}L` : `${Math.round(v * 50)}R`) }
 
+const NOTE_NM = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+function Analyzer() {
+  const [mode, setMode] = useState<'spectrum' | 'scope' | 'tuner'>('spectrum')
+  const ref = React.useRef<HTMLCanvasElement>(null)
+  useRaf(() => {
+    const c = ref.current
+    if (!c) return
+    const dpr = window.devicePixelRatio || 1
+    const W = 108, H = 46
+    if (c.width !== W * dpr) { c.width = W * dpr; c.height = H * dpr; c.style.width = W + 'px'; c.style.height = H + 'px' }
+    const ctx = c.getContext('2d')!
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    const css = getComputedStyle(document.documentElement)
+    ctx.fillStyle = css.getPropertyValue('--bg0').trim()
+    ctx.fillRect(0, 0, W, H)
+    const accent = css.getPropertyValue('--accent').trim()
+    const accent2 = css.getPropertyValue('--accent2').trim()
+    if (mode === 'spectrum') {
+      const fft = engine.getSpectrum()
+      const bins = 48
+      ctx.fillStyle = accent
+      for (let i = 0; i < bins; i++) {
+        const idx = Math.floor(Math.pow(i / bins, 2) * (fft.length * 0.5))
+        const db = fft[idx] ?? -140
+        const h = Math.max(0, Math.min(1, (db + 100) / 80)) * H
+        ctx.fillRect(i * (W / bins), H - h, W / bins - 0.5, h)
+      }
+    } else if (mode === 'scope') {
+      const w = engine.getWaveform()
+      ctx.strokeStyle = accent2
+      ctx.lineWidth = 1.2
+      ctx.beginPath()
+      for (let i = 0; i < W; i++) {
+        const v = w[Math.floor(i / W * w.length)] ?? 0
+        const y = H / 2 - v * H * 0.45
+        i === 0 ? ctx.moveTo(i, y) : ctx.lineTo(i, y)
+      }
+      ctx.stroke()
+    } else {
+      const hz = engine.getPitchHz()
+      ctx.textAlign = 'center'
+      if (hz > 20) {
+        const midi = 69 + 12 * Math.log2(hz / 440)
+        const nearest = Math.round(midi)
+        const cents = Math.round((midi - nearest) * 100)
+        ctx.fillStyle = Math.abs(cents) < 6 ? accent2 : accent
+        ctx.font = 'bold 18px sans-serif'
+        ctx.fillText(`${NOTE_NM[((nearest % 12) + 12) % 12]}${Math.floor(nearest / 12) - 1}`, W / 2, 21)
+        ctx.fillStyle = css.getPropertyValue('--dim').trim()
+        ctx.font = '10px sans-serif'
+        ctx.fillText(`${cents > 0 ? '+' : ''}${cents}¢`, W / 2, 38)
+        ctx.strokeStyle = accent2
+        ctx.beginPath(); ctx.moveTo(W / 2, 42); ctx.lineTo(W / 2 + cents * 0.8, 42); ctx.stroke()
+      } else {
+        ctx.fillStyle = css.getPropertyValue('--dim').trim()
+        ctx.font = '10px sans-serif'
+        ctx.fillText('— play a note —', W / 2, 26)
+      }
+    }
+  })
+  const next = () => setMode(m => m === 'spectrum' ? 'scope' : m === 'scope' ? 'tuner' : 'spectrum')
+  return (
+    <div className="analyzer" onClick={next} data-info="Master analyzer — click to cycle spectrum · scope · tuner">
+      <canvas ref={ref} />
+      <span className="analyzer-mode">{mode}</span>
+    </div>
+  )
+}
+
 function useEngineTick() {
   return useSyncExternalStore(engine.subscribe, () => engine.version)
 }
@@ -295,6 +364,7 @@ export function SessionView() {
           <button className="add-scene" onClick={() => addScene()} data-info="Add a scene (row of clips)">＋ Scene</button>
           <div className="master-strip" data-info="Master volume & output meter">
             <span className="master-label">Master</span>
+            <Analyzer />
             <div className="master-mix">
               <Fader value={meta.get('masterGain') ?? 0} onChange={v => setMetaField('Master volume', 'masterGain', v)} height={80} />
               <MeterBar getDb={() => engine.masterDb()} height={80} />

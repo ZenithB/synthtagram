@@ -480,3 +480,46 @@ button { cursor: pointer; background: none; border: none; }
 .ctx-chip { padding: 2px 7px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg2); color: var(--text); font-size: 11px; font-variant-numeric: tabular-nums; }
 .ctx-chip:hover { border-color: var(--accent); color: var(--accent); }
 .ctx-chip.on { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+
+/* ---------------- master analyzer ---------------- */
+.analyzer { cursor: pointer; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; position: relative; background: var(--bg0); }
+.analyzer canvas { display: block; }
+.analyzer-mode { position: absolute; top: 2px; right: 4px; font-size: 8px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.5px; pointer-events: none; }
+
+/* ---------------- sampler / midi-fx / sends / macros / returns ---------------- */
+.sampler-controls { display: flex; align-items: center; gap: 5px; margin: 4px 0 2px; flex-wrap: wrap; }
+.sampler-name { font-size: 11px; color: var(--accent2); max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.midifx-device { border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); }
+.midifx-device .device-title .icon { color: var(--accent); }
+.midifx-note { font-size: 10px; color: var(--dim); padding: 6px 2px; max-width: 130px; }
+.sends-device .device-title .icon { color: var(--accent2); }
+.add-midi .icon { color: var(--accent); }
+.add-midi:hover { color: var(--accent); border-color: var(--accent); }
+.add-macro .icon, .macro-device .device-title .icon { color: var(--accent2); }
+.macro-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 2px 8px; }
+.macro-cell { display: flex; flex-direction: column; align-items: center; }
+.macro-label { font-size: 9px; color: var(--dim); max-width: 48px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 1px 4px; border-radius: 3px; }
+.macro-label:hover { color: var(--text); background: var(--bg2); }
+.macro-label.mapped { color: var(--accent2); }
+.return-device { border-color: color-mix(in srgb, var(--accent2) 45%, var(--border)); }
+.return-device .device-title .icon { color: var(--accent2); }
+.rack-divider { width: 1px; align-self: stretch; background: var(--border); margin: 8px 4px; flex-shrink: 0; }
+
+/* ---------------- browser favorites ---------------- */
+.bitem-star { margin-left: auto; color: var(--bg3); display: inline-flex; flex-shrink: 0; padding: 2px; }
+.bitem:hover .bitem-star { color: var(--dim); }
+.bitem-star.on { color: var(--accent); }
+.bitem-star:hover { color: var(--accent); }
+
+/* ---------------- piano-roll automation + steps ---------------- */
+.auto-select { background: var(--bg2); border: 1px solid var(--border); border-radius: 4px; padding: 2px 4px; color: var(--text); font-size: 11px; max-width: 110px; }
+.step-grid { height: 100%; overflow: auto; padding: 6px 8px; display: flex; flex-direction: column; gap: 3px; }
+.step-row { display: flex; align-items: center; gap: 6px; }
+.step-pad { width: 56px; flex-shrink: 0; text-align: left; font-size: 11px; color: var(--dim); padding: 4px 2px; border-radius: 4px; }
+.step-pad:hover { color: var(--text); background: var(--bg2); }
+.step-cells { display: flex; gap: 3px; flex: 1; }
+.step-cell { flex: 1; min-width: 16px; height: 26px; border-radius: 3px; background: var(--bg2); border: 1px solid var(--border); }
+.step-cell.beat { background: var(--bg3); }
+.step-cell.bar { border-left: 2px solid var(--gridBar); }
+.step-cell:hover { border-color: var(--dim); }
+.step-cell.on { background: var(--accent); border-color: var(--accent); }

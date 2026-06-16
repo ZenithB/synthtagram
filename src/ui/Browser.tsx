@@ -12,6 +12,18 @@ import { useY } from './hooks'
 import { NOTE_NAMES } from '../theory'
 import { instSchema } from '../audio/schema'
 import { Icon } from './icons'
+import { listUserPresets, removeUserPreset, isFavorite, toggleFavorite, useLib } from '../userlib'
+
+function Star({ id }: { id: string }) {
+  useLib()
+  const fav = isFavorite(id)
+  return (
+    <button className={`bitem-star ${fav ? 'on' : ''}`} title={fav ? 'Unfavorite' : 'Favorite'}
+      onClick={e => { e.stopPropagation(); toggleFavorite(id) }}>
+      <Icon name={fav ? 'starFill' : 'star'} size={12} />
+    </button>
+  )
+}
 
 function Section({ title, children, defaultOpen = true }: { title: string; children: React.ReactNode; defaultOpen?: boolean }) {
   const [open, setOpen] = useState(defaultOpen)
@@ -38,10 +50,13 @@ export function Browser() {
   const loops = MIDI_LOOPS.filter(l => match(`${l.name} ${l.cat}`))
   const progs = PROGRESSIONS.filter(p => match(`${p.name} ${p.numerals} ${p.mode} chords progression`))
 
+  useLib()
   const cats = [...new Set(presets.map(p => p.cat))]
   const loopCats = [...new Set(loops.map(l => l.cat))]
   const rootPc = meta.get('root') ?? 9
   const auditionInst = INST_PRESETS.find(p => p.name === 'Dream Keys')!
+  const userPresets = listUserPresets().filter(p => match(p.name))
+  const favPresets = INST_PRESETS.filter(p => isFavorite(`i:${p.name}`) && match(`${p.name} ${p.cat}`))
 
   return (
     <div className="browser">
@@ -55,6 +70,34 @@ export function Browser() {
         />
       </div>
       <div className="browser-scroll">
+        {userPresets.length > 0 && (
+          <Section title="My Sounds">
+            {userPresets.map(p => (
+              <div key={p.name} className="bitem" draggable
+                onDragStart={e => e.dataTransfer.setData('stg/preset', p.name)}
+                onClick={() => engine.audition(p.type, p.params)}
+                onDoubleClick={() => applyPreset({ name: p.name, cat: 'User', type: p.type, params: p.params })}
+                data-info="Your saved preset · double-click to load · ✕ to delete">
+                <span className="bitem-icon"><Icon name={instSchema(p.type).icon} size={12} /></span>{p.name}
+                <button className="bitem-star" title="Delete" onClick={e => { e.stopPropagation(); removeUserPreset(p.name) }}><Icon name="close" size={11} /></button>
+              </div>
+            ))}
+          </Section>
+        )}
+        {favPresets.length > 0 && (
+          <Section title="Favorites">
+            {favPresets.map(p => (
+              <div key={p.name} className="bitem" draggable
+                onDragStart={e => e.dataTransfer.setData('stg/preset', p.name)}
+                onClick={() => engine.audition(p.type, p.params)}
+                onDoubleClick={() => applyPreset(p)}
+                data-info="Click: audition · Double-click: load">
+                <span className="bitem-icon"><Icon name={instSchema(p.type).icon} size={12} /></span>{p.name}
+                <Star id={`i:${p.name}`} />
+              </div>
+            ))}
+          </Section>
+        )}
         <Section title="Instruments">
           {cats.map(cat => (
             <div key={cat}>
@@ -70,6 +113,7 @@ export function Browser() {
                   data-info="Click: audition · Double-click: load to selected track · Drag onto a track"
                 >
                   <span className="bitem-icon"><Icon name={instSchema(p.type).icon} size={12} /></span>{p.name}
+                  <Star id={`i:${p.name}`} />
                 </div>
               ))}
             </div>

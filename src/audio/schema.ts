@@ -34,6 +34,9 @@ const WAVE_LABELS = ['Saw', 'Sqr', 'Tri', 'Sin', 'FatSaw', 'FatSqr', 'FatTri']
 export const DELAY_DIVS = ['1/32', '1/16', '1/8', '3/16', '1/4', '1/2']
 export const DELAY_FRACTIONS = [1 / 32, 1 / 16, 1 / 8, 3 / 16, 1 / 4, 1 / 2] // of a whole note
 
+export const DUCK_DIVS = ['1/2', '1/4', '1/4T', '1/8', '1/8T', '1/16']
+export const DUCK_DIV_TICKS = [192, 96, 64, 48, 32, 24] // PPQ=96 ⇒ bar=384
+
 // ----------------- instruments -----------------
 export type InstrumentSchema = { type: string; label: string; icon: string; params: ParamSpec[] }
 
@@ -103,6 +106,14 @@ export const INSTRUMENTS: InstrumentSchema[] = [
     params: [
       { key: 'harm', label: 'Color', min: 0.5, max: 4, def: 2, fmt: fmtX },
       ...adsr(0.01, 0.4, 0.5, 0.8),
+    ],
+  },
+  {
+    type: 'sampler', label: 'Sampler', icon: 'sampler',
+    params: [
+      { key: 'tune', label: 'Tune', min: -24, max: 24, def: 0, fmt: fmtSemi },
+      { key: 'attack', label: 'Attack', min: 0.001, max: 1, def: 0.005, exp: true, fmt: fmtSec },
+      { key: 'release', label: 'Release', min: 0.01, max: 3, def: 0.4, exp: true, fmt: fmtSec },
     ],
   },
   { type: 'drum', label: 'Drum Kit', icon: 'drum', params: drumParams() },
@@ -242,6 +253,14 @@ export const EFFECTS: EffectSchema[] = [
       { key: 'mix', label: 'Mix', min: 0, max: 1, def: 0.4, fmt: fmtPct },
     ],
   },
+  {
+    type: 'duck', label: 'Sidechain', icon: 'duck',
+    params: [
+      { key: 'rate', label: 'Rate', min: 0, max: DUCK_DIVS.length - 1, def: 1, int: true, steps: DUCK_DIVS },
+      { key: 'amount', label: 'Amount', min: 0, max: 1, def: 0.7, fmt: fmtPct },
+      { key: 'curve', label: 'Release', min: 0.1, max: 1, def: 0.5, fmt: fmtPct },
+    ],
+  },
 ]
 
 export function instSchema(type: string) {
@@ -297,3 +316,49 @@ export function lfoShapeValue(shape: number, phase: number): number {
     default: return Math.sin(f * Math.PI * 2)                // sine
   }
 }
+
+// ----------------- mixer pseudo-params (automation / macro targets) -----------------
+export const MIX_SPECS: ParamSpec[] = [
+  { key: 'gain', label: 'Volume', min: -48, max: 6, def: 0, fmt: fmtDb },
+  { key: 'pan', label: 'Pan', min: -1, max: 1, def: 0, fmt: v => Math.abs(v) < 0.02 ? 'C' : v < 0 ? `${Math.round(-v * 50)}L` : `${Math.round(v * 50)}R` },
+]
+export function mixSpec(key: string) { return MIX_SPECS.find(s => s.key === key) }
+
+// ----------------- live MIDI effects -----------------
+export type MidiFxSchema = { type: string; label: string; icon: string; params: ParamSpec[] }
+export const MIDI_FX: MidiFxSchema[] = [
+  { type: 'scale', label: 'Scale', icon: 'note', params: [] }, // forces project scale
+  {
+    type: 'chord', label: 'Chord', icon: 'chord', params: [
+      { key: 'i1', label: '+ Semi 1', min: -12, max: 24, def: 4, int: true, fmt: fmtSemi },
+      { key: 'i2', label: '+ Semi 2', min: -12, max: 24, def: 7, int: true, fmt: fmtSemi },
+      { key: 'i3', label: '+ Semi 3', min: -12, max: 24, def: 0, int: true, fmt: fmtSemi },
+    ],
+  },
+  {
+    type: 'arp', label: 'Arp', icon: 'arpUp', params: [
+      { key: 'rate', label: 'Rate', min: 0, max: 5, def: 3, int: true, steps: ['1/4', '1/8', '1/8T', '1/16', '1/16T', '1/32'] },
+      { key: 'mode', label: 'Mode', min: 0, max: 3, def: 0, int: true, steps: ['Up', 'Down', 'Up-Dn', 'Rand'] },
+      { key: 'oct', label: 'Octaves', min: 1, max: 4, def: 1, int: true, fmt: v => `${Math.round(v)}` },
+      { key: 'gate', label: 'Gate', min: 0.1, max: 1, def: 0.8, fmt: fmtPct },
+    ],
+  },
+  {
+    type: 'velo', label: 'Velocity', icon: 'rampUp', params: [
+      { key: 'scale', label: 'Scale', min: 0, max: 2, def: 1, fmt: fmtPct },
+      { key: 'rand', label: 'Random', min: 0, max: 1, def: 0, fmt: fmtPct },
+    ],
+  },
+  {
+    type: 'rand', label: 'Random', icon: 'dice', params: [
+      { key: 'chance', label: 'Chance', min: 0, max: 1, def: 1, fmt: fmtPct },
+      { key: 'octave', label: 'Oct Jump', min: 0, max: 1, def: 0, fmt: fmtPct },
+    ],
+  },
+]
+export function midiFxSchema(type: string) { return MIDI_FX.find(m => m.type === type) ?? MIDI_FX[0] }
+
+export const ARP_DIV_TICKS = [96, 48, 32, 24, 16, 12]
+
+// ----------------- follow actions -----------------
+export const FOLLOW_ACTIONS = ['Next', 'Prev', 'First', 'Any', 'Random', 'Stop']

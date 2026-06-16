@@ -5,16 +5,37 @@
 
 import React, { useEffect, useRef, useState } from 'react'
 import * as Y from 'yjs'
-import { BAR, GRID_OPTIONS, DRUM_PADS, Note, clamp, CLIP_COLORS } from '../types'
-import { getClipMap, notesOf, addNote, addNotes, updateNotes, deleteNotes, setClipField, meta, trackById } from '../state/doc'
+import { BAR, GRID_OPTIONS, DRUM_PADS, STEP16, Note, clamp, CLIP_COLORS } from '../types'
+import {
+  getClipMap, notesOf, addNote, addNotes, updateNotes, deleteNotes, setClipField, meta, trackById,
+  envPoints, setEnvPoints, followOf, setFollow,
+} from '../state/doc'
 import { setUI, ui, useUI, toast } from '../state/store'
 import { useY } from './hooks'
 import { openMenu, ColorRow } from './widgets'
 import { inScale, snapToScale, midiName, getScale } from '../theory'
+import { instSchema, fxSchema, mixSpec, FOLLOW_ACTIONS } from '../audio/schema'
 import * as tools from '../noteTools'
 import { engine } from '../audio/engine'
 import { clips, clipKey } from '../state/doc'
 import { Icon } from './icons'
+
+// Automation targets available for a track (continuous params only).
+function autoTargets(trackId: string | null): { key: string; label: string }[] {
+  if (!trackId) return []
+  const t = trackById(trackId); if (!t) return []
+  const out: { key: string; label: string }[] = []
+  out.push({ key: 'mix||gain', label: 'Volume' }, { key: 'mix||pan', label: 'Pan' })
+  if (t.get('kind') !== 'drum') {
+    instSchema(t.get('inst').get('type')).params.filter(p => !p.steps).forEach(p =>
+      out.push({ key: `inst||${p.key}`, label: `Inst · ${p.label}` }))
+  }
+  ;(t.get('fx') as any).forEach((f: any) => {
+    fxSchema(f.get('type')).params.filter((p: any) => !p.steps).forEach((p: any) =>
+      out.push({ key: `fx|${f.get('id')}|${p.key}`, label: `${fxSchema(f.get('type')).label} · ${p.label}` }))
+  })
+  return out
+}
 
 const KEY_W = 48
 const LANE_H = 64
@@ -23,6 +44,40 @@ const MIN_P = 21
 
 // Note clipboard, shared across clip switches (copy here, paste there).
 let noteClip: Note[] = []
+
+// 16-step drum grid — the fastest way to build a beat. Writes to clip notes.
+function StepGrid({ clipMap, trackId }: { clipMap: Y.Map<any>; trackId: string | null }) {
+  const len = clipMap.get('len') ?? BAR
+  const nSteps = Math.min(64, Math.max(16, Math.round(len / STEP16)))
+  const notes = notesOf(clipMap)
+  const at = (pad: number, step: number) =>
+    notes.find(([, n]) => n.p === pad && Math.round(n.s / STEP16) === step)
+  const toggle = (pad: number, step: number) => {
+    const hit = at(pad, step)
+    if (hit) deleteNotes(clipMap, [hit[0]], 'Clear step')
+    else { addNote(clipMap, { p: pad, s: step * STEP16, d: STEP16, v: ui.velo, pr: ui.drawProb }, 'Add step'); engine.previewOn(trackId, pad, ui.velo) }
+  }
+  return (
+    <div className="step-grid">
+      {DRUM_PADS.map((name, pad) => (
+        <div key={pad} className="step-row">
+          <button className="step-pad" onClick={() => engine.previewOn(trackId, pad, 0.9)}>{name}</button>
+          <div className="step-cells">
+            {Array.from({ length: nSteps }, (_, step) => {
+              const hit = at(pad, step)
+              return (
+                <button key={step}
+                  className={`step-cell ${hit ? 'on' : ''} ${step % 4 === 0 ? 'beat' : ''} ${step % 16 === 0 ? 'bar' : ''}`}
+                  style={hit ? { opacity: 0.4 + 0.6 * hit[1].v } : undefined}
+                  onClick={() => toggle(pad, step)} />
+              )
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
 
 type Drag =
   | { type: 'move'; ids: string[]; orig: Map<string, Note>; startTick: number; startPitch: number; dTick: number; dPitch: number; copy: boolean; moved: boolean }
@@ -40,6 +95,8 @@ export function PianoRoll() {
   const lane = useUI(s => s.lane)
   const theme = useUI(s => s.theme)
   const [fold, setFold] = useState(false)
+  const [autoTarget, setAutoTarget] = useState<string | null>(null)
+  const [stepView, setStepView] = useState(true)
   const [, force] = useState(0)
   const bump = () => force(x => x + 1)
 
@@ -53,6 +110,8 @@ export function PianoRoll() {
   const sel = useRef<Set<string>>(new Set())
   const dragRef = useRef<Drag>(null)
   const hoverRef = useRef<{ tick: number; pitch: number } | null>(null)
+  const autoPaint = useRef<Map<number, number> | null>(null)
+  const autoMode = !!autoTarget
 
   // reset selection when switching clips
   const clipIdRef = useRef<string | null>(null)
@@ -61,6 +120,7 @@ export function PianoRoll() {
     clipIdRef.current = clipId
     sel.current = new Set()
     dragRef.current = null
+    autoPaint.current = null
   }
 
   const trackId: string | null = selClip
@@ -70,6 +130,8 @@ export function PianoRoll() {
   const trackColor = trackId ? CLIP_COLORS[trackById(trackId)?.get('color') ?? 0] : '#888'
   const root = meta.get('root') ?? 9
   const scaleId = meta.get('scale') ?? 'minor'
+  const targetsList = autoTargets(trackId)
+  const autoTargetLabel = autoTarget ? (targetsList.find(t => t.key === autoTarget)?.label ?? '') : ''
 
   // ---- visible pitch rows (fold support) ----
   const rowH = isDrum ? 30 : 13
@@ -249,19 +311,47 @@ export function PianoRoll() {
       ctx.stroke()
       ctx.fillStyle = C('--dim')
       ctx.font = '9px sans-serif'
-      ctx.fillText(lane === 'vel' ? 'VELOCITY' : 'CHANCE', 6, gridH + 12)
-      for (const [id, n] of entries) {
-        const x = KEY_W + n.s * pxPerTick - scrollX
-        if (x < KEY_W - 4 || x > W) continue
-        const val = lane === 'vel' ? n.v : n.pr
-        const bh = val * (LANE_H - 14)
-        ctx.fillStyle = trackColor
-        ctx.globalAlpha = sel.current.has(id) ? 1 : 0.55
-        ctx.fillRect(x - 1.5, gridH + (LANE_H - bh) - 4, 3, bh)
-        ctx.beginPath()
-        ctx.arc(x, gridH + (LANE_H - bh) - 4, 3, 0, Math.PI * 2)
-        ctx.fill()
-        ctx.globalAlpha = 1
+      const laneY = (v: number) => gridH + (LANE_H - 4) - v * (LANE_H - 14)
+      if (autoMode) {
+        ctx.fillStyle = C('--accent2')
+        ctx.fillText(`AUTO · ${autoTargetLabel}`, 6, gridH + 12)
+        // build the curve from the live paint map (if painting) or the stored env
+        const src = autoPaint.current
+          ? [...autoPaint.current.entries()].map(([t, v]) => ({ t, v })).sort((a, b) => a.t - b.t)
+          : envPoints(clipMap, autoTarget!)
+        if (src.length) {
+          ctx.strokeStyle = C('--accent2')
+          ctx.fillStyle = 'color-mix(in srgb, var(--accent2) 18%, transparent)'
+          ctx.lineWidth = 1.5
+          ctx.beginPath()
+          src.forEach((p, i) => {
+            const x = KEY_W + p.t * pxPerTick - scrollX
+            const y = laneY(p.v)
+            i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)
+          })
+          ctx.stroke()
+          ctx.lineWidth = 1
+          for (const p of src) {
+            const x = KEY_W + p.t * pxPerTick - scrollX
+            if (x < KEY_W - 4 || x > W) continue
+            ctx.beginPath(); ctx.arc(x, laneY(p.v), 2.5, 0, Math.PI * 2); ctx.fill()
+          }
+        }
+      } else {
+        ctx.fillText(lane === 'vel' ? 'VELOCITY' : 'CHANCE', 6, gridH + 12)
+        for (const [id, n] of entries) {
+          const x = KEY_W + n.s * pxPerTick - scrollX
+          if (x < KEY_W - 4 || x > W) continue
+          const val = lane === 'vel' ? n.v : n.pr
+          const bh = val * (LANE_H - 14)
+          ctx.fillStyle = trackColor
+          ctx.globalAlpha = sel.current.has(id) ? 1 : 0.55
+          ctx.fillRect(x - 1.5, gridH + (LANE_H - bh) - 4, 3, bh)
+          ctx.beginPath()
+          ctx.arc(x, gridH + (LANE_H - bh) - 4, 3, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.globalAlpha = 1
+        }
       }
 
       // piano keys column (over rows)
@@ -296,7 +386,7 @@ export function PianoRoll() {
     }
     raf = requestAnimationFrame(draw)
     return () => cancelAnimationFrame(raf)
-  }, [clipMap, gridTicks, lane, fold, isDrum, trackColor, root, scaleId, theme, selClip])
+  }, [clipMap, gridTicks, lane, fold, isDrum, trackColor, root, scaleId, theme, selClip, autoTarget, autoTargetLabel])
 
   // ---------------- interactions ----------------
 
@@ -346,7 +436,12 @@ export function PianoRoll() {
     }
     if (loc.inLane) {
       dragRef.current = { type: 'lane' }
-      laneDrag(e)
+      if (autoMode) {
+        const m = new Map<number, number>()
+        envPoints(clipMap, autoTarget!).forEach(p => m.set(p.t, p.v))
+        autoPaint.current = m
+        paintAuto(e)
+      } else laneDrag(e)
       return
     }
 
@@ -388,8 +483,20 @@ export function PianoRoll() {
     }
   }
 
+  const paintAuto = (e: React.PointerEvent) => {
+    if (!clipMap || !autoPaint.current) return
+    const loc = locate(e)
+    const H = boxRef.current!.clientHeight
+    const val = clamp(1 - (loc.y - (H - LANE_H) - 4) / (LANE_H - 14), 0, 1)
+    const snap = Math.max(6, Math.round(gridTicks / 2))
+    const t = Math.max(0, Math.round(loc.tick / snap) * snap)
+    autoPaint.current.set(t, Math.round(val * 100) / 100)
+    bump()
+  }
+
   const laneDrag = (e: React.PointerEvent) => {
     if (!clipMap) return
+    if (autoMode && autoPaint.current) { paintAuto(e); return }
     const loc = locate(e)
     const H = boxRef.current!.clientHeight
     const val = clamp(1 - (loc.y - (H - LANE_H) - 4) / (LANE_H - 14), 0.02, 1)
@@ -444,6 +551,13 @@ export function PianoRoll() {
     const d = dragRef.current
     dragRef.current = null
     if (!d || !clipMap) return
+    if (d.type === 'lane' && autoMode && autoPaint.current) {
+      const pts = [...autoPaint.current.entries()].map(([t, v]) => ({ t, v }))
+      setEnvPoints(clipMap, autoTarget!, pts)
+      autoPaint.current = null
+      bump()
+      return
+    }
     if (d.type === 'move' && d.moved) {
       if (d.copy) {
         const copies: Note[] = []
@@ -677,6 +791,19 @@ export function PianoRoll() {
     },
   ])
 
+  const followMenu = (e: React.MouseEvent) => {
+    const f = followOf(clipMap) ?? { on: false, bars: 1, action: 0, chance: 1 }
+    const fchip = (active: boolean, label: string, fn: () => void) =>
+      <button key={label} className={`ctx-chip ${active ? 'on' : ''}`} onClick={fn}>{label}</button>
+    openMenu(e, [
+      { label: <><Icon name={f.on ? 'starFill' : 'follow'} size={12} /> {f.on ? 'Following — on' : 'Enable follow'}</>, fn: () => setFollow(clipMap, { on: !f.on }) },
+      'sep',
+      { custom: <div className="ctx-row"><span className="ctx-row-label">After bars</span>{[1, 2, 4, 8].map(b => fchip(f.bars === b, `${b}`, () => setFollow(clipMap, { bars: b })))}</div> },
+      { custom: <div className="ctx-row"><span className="ctx-row-label">Action</span>{FOLLOW_ACTIONS.map((a, i) => fchip(f.action === i, a, () => setFollow(clipMap, { action: i })))}</div> },
+      { custom: <div className="ctx-row"><span className="ctx-row-label">Chance</span>{[0.25, 0.5, 0.75, 1].map(c => fchip(Math.abs(f.chance - c) < 0.06, `${Math.round(c * 100)}`, () => setFollow(clipMap, { chance: c })))}</div> },
+    ])
+  }
+
   return (
     <div className="roll">
       <div className="roll-toolbar">
@@ -711,24 +838,43 @@ export function PianoRoll() {
               data-info="Fold: only show in-scale rows">Fold</button>
           </>
         )}
-        <div className="lane-toggle" data-info="Bottom lane: per-note velocity, or per-note play chance (Live 11 style!)">
-          <button className={`tbtn ${lane === 'vel' ? 'on' : ''}`} onClick={() => setUI({ lane: 'vel' })}>Vel</button>
-          <button className={`tbtn ${lane === 'prob' ? 'on' : ''}`} onClick={() => setUI({ lane: 'prob' })}>Chance</button>
-        </div>
+        {isDrum && (
+          <button className={`tbtn ${stepView ? 'on' : ''}`} onClick={() => setStepView(!stepView)}
+            data-info="Step sequencer view (drum grid) vs piano roll"><Icon name="steps" size={12} /> Steps</button>
+        )}
+        {!(isDrum && stepView) && (
+          <div className="lane-toggle" data-info="Bottom lane: velocity, chance, or draw automation for a parameter">
+            <button className={`tbtn ${lane === 'vel' && !autoMode ? 'on' : ''}`} onClick={() => { setAutoTarget(null); setUI({ lane: 'vel' }) }}>Vel</button>
+            <button className={`tbtn ${lane === 'prob' && !autoMode ? 'on' : ''}`} onClick={() => { setAutoTarget(null); setUI({ lane: 'prob' }) }}>Chance</button>
+            <select className="auto-select" value={autoTarget ?? ''} data-info="Draw automation: pick a parameter to draw an envelope over the clip"
+              onChange={e => setAutoTarget(e.target.value || null)}>
+              <option value="">Auto…</option>
+              {targetsList.map(t => <option key={t.key} value={t.key}>{t.label}</option>)}
+            </select>
+            {autoMode && <button className="tbtn" data-info="Clear this automation envelope"
+              onClick={() => { setEnvPoints(clipMap, autoTarget!, []); autoPaint.current = null; bump() }}><Icon name="close" size={11} /></button>}
+          </div>
+        )}
+        {selClip.kind === 'session' && (
+          <button className={`tbtn ${followOf(clipMap)?.on ? 'on' : ''}`} onClick={followMenu}
+            data-info="Follow action: auto-trigger another clip after N bars"><Icon name="follow" size={12} /> Follow</button>
+        )}
         <button className="tbtn" onClick={toolsMenu} data-info="MIDI tools: chordify, arp, strum, humanize, quantize…"><Icon name="tools" size={12} /> Tools</button>
         <span className="roll-selcount">{sel.current.size > 0 ? `${sel.current.size} selected` : ''}</span>
         <button className="icon-btn roll-close" onClick={() => setUI({ detailOpen: false })} data-info="Close editor (Esc)"><Icon name="close" size={12} /></button>
       </div>
       <div className="roll-canvas-box" ref={boxRef}>
-        <canvas
-          ref={canvasRef}
-          onPointerDown={onPointerDown}
-          onPointerMove={onPointerMove}
-          onPointerUp={onPointerUp}
-          onDoubleClick={onDoubleClick}
-          onContextMenu={onContextMenu}
-          onWheel={onWheel}
-        />
+        {isDrum && stepView
+          ? <StepGrid clipMap={clipMap} trackId={trackId} />
+          : <canvas
+              ref={canvasRef}
+              onPointerDown={onPointerDown}
+              onPointerMove={onPointerMove}
+              onPointerUp={onPointerUp}
+              onDoubleClick={onDoubleClick}
+              onContextMenu={onContextMenu}
+              onWheel={onWheel}
+            />}
       </div>
     </div>
   )

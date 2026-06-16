@@ -62,6 +62,17 @@ const ICONS: Record<string, React.ReactNode> = {
   grip: <path d="M3 6.4 H13 M3 9.6 H13" />,
   lfo: <><circle cx="8" cy="8" r="6" /><path d="M3.4 8 C4.5 4.6, 6 4.6, 7 8 S9.5 11.4, 10.6 8 12.6 5.4, 12.6 8" /></>,
   map: <><circle cx="8" cy="8" r="2.4" /><path d="M8 1.6 v2.2 M8 12.2 v2.2 M1.6 8 h2.2 M12.2 8 h2.2" /></>,
+  duck: <path d="M2 4 V9 a2 2 0 0 0 2 2 h2 l2-7 2 7 h2 a2 2 0 0 0 2-2 V4" />,
+  sampler: <><rect x="2.4" y="3" width="11.2" height="10" rx="1.4" /><path d="M2.4 8 h2 l1.5-3 1.5 6 1.5-4 1 2 h3.2" /></>,
+  spectrum: <><line x1="3" y1="13" x2="3" y2="8" /><line x1="6" y1="13" x2="6" y2="4" /><line x1="9" y1="13" x2="9" y2="6" /><line x1="12" y1="13" x2="12" y2="9" /></>,
+  star: <path d="M8 1.8 L9.9 6 L14.2 6.4 L11 9.4 L11.9 13.8 L8 11.4 L4.1 13.8 L5 9.4 L1.8 6.4 L6.1 6 Z" />,
+  starFill: <path d="M8 1.8 L9.9 6 L14.2 6.4 L11 9.4 L11.9 13.8 L8 11.4 L4.1 13.8 L5 9.4 L1.8 6.4 L6.1 6 Z" fill="currentColor" stroke="none" />,
+  macro: <><circle cx="8" cy="8" r="5.6" /><path d="M8 3.4 V8 L11 9.8" /><circle cx="8" cy="8" r="1.1" fill="currentColor" stroke="none" /></>,
+  send: <path d="M2.4 13 L13.6 8 L2.4 3 L4.4 8 Z M4.4 8 H13.6" />,
+  follow: <path d="M3 4 L8 8 L3 12 Z M9 4 L14 8 L9 12 Z" fill="currentColor" stroke="none" />,
+  mic: <><rect x="6" y="2" width="4" height="7.5" rx="2" /><path d="M3.8 8 a4.2 4.2 0 0 0 8.4 0 M8 12.2 V14 M5.6 14 H10.4" /></>,
+  steps: <><rect x="2" y="3" width="3" height="3" rx="0.5" fill="currentColor" stroke="none" /><rect x="6.5" y="3" width="3" height="3" rx="0.5" /><rect x="11" y="3" width="3" height="3" rx="0.5" fill="currentColor" stroke="none" /><rect x="2" y="10" width="3" height="3" rx="0.5" /><rect x="6.5" y="10" width="3" height="3" rx="0.5" fill="currentColor" stroke="none" /><rect x="11" y="10" width="3" height="3" rx="0.5" /></>,
+  curve: <path d="M2 13 C7 13, 9 3, 14 3" />,
   pencil: <>
     <path d="M3 13 L3.6 10.4 L10.8 3.2 L12.8 5.2 L5.6 12.4 Z" />
     <line x1="9.6" y1="4.4" x2="11.6" y2="6.4" />

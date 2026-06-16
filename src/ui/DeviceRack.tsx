@@ -7,18 +7,38 @@ import * as Y from 'yjs'
 import { DRUM_PADS } from '../types'
 import {
   trackById, setInstParam, setInstrument, addFx, removeFx, moveFx, setFxParam, setFxOn,
-  addLfo, removeLfo, setLfoField, setLfoTarget,
+  addLfo, removeLfo, setLfoField, setLfoTarget, setSend,
+  addMidiFx, removeMidiFx, setMidiFxParam, setMidiFxOn, midifxOf,
+  ensureMacros, macrosOf, setMacroValue, addMacroTarget, clearMacroTargets, setMacroName,
+  returns, setReturnGain, setReturnParam, setReturnFxType, setSamplerSample,
 } from '../state/doc'
-import { useUI } from '../state/store'
+import { useUI, toast } from '../state/store'
 import { useY, useRaf } from './hooks'
 import { Knob, openMenu } from './widgets'
 import {
   INSTRUMENTS, EFFECTS, instSchema, fxSchema, defaultsFor,
-  LFO_SHAPES, LFO_DIVS, LFO_PARAMS,
+  LFO_SHAPES, LFO_DIVS, LFO_PARAMS, MIDI_FX, midiFxSchema, mixSpec, fmtPct, ParamSpec,
 } from '../audio/schema'
 import { INST_PRESETS, DRUM_KITS } from '../packs'
 import { engine } from '../audio/engine'
+import { saveUserPreset } from '../userlib'
+import { importSampleFile, startSampleRecording, stopSampleRecording, isRecordingSample } from '../audio/samples'
 import { Icon } from './icons'
+
+const SEND_A_SPEC: ParamSpec = { key: 'sendA', label: '→ A', min: 0, max: 1, def: 0, fmt: fmtPct }
+const SEND_B_SPEC: ParamSpec = { key: 'sendB', label: '→ B', min: 0, max: 1, def: 0, fmt: fmtPct }
+const MACRO_SPEC: ParamSpec = { key: 'm', label: '', min: 0, max: 1, def: 0, fmt: fmtPct }
+
+function targetRange(track: Y.Map<any>, dest: string, fxId: string, pkey: string): [number, number] {
+  let spec
+  if (dest === 'inst') spec = instSchema(track.get('inst').get('type')).params.find(s => s.key === pkey)
+  else if (dest === 'mix') spec = mixSpec(pkey)
+  else {
+    const fxArr = track.get('fx') as Y.Array<Y.Map<any>>
+    for (let i = 0; i < fxArr.length; i++) if (fxArr.get(i).get('id') === fxId) { spec = fxSchema(fxArr.get(i).get('type')).params.find(s => s.key === pkey); break }
+  }
+  return spec ? [spec.min, spec.max] : [0, 1]
+}
 
 // All continuous (non-enum) parameters on a track that an LFO can modulate.
 type ModTarget = { dest: 'inst' | 'fx'; fxId: string; pkey: string; label: string }
@@ -138,7 +158,16 @@ function InstrumentPanel({ trackId, track }: { trackId: string; track: Y.Map<any
           <option value="">{kind === 'drum' ? 'Kits…' : 'Presets…'}</option>
           {(kind === 'drum' ? kitNames : presetMatches).map(n => <option key={n} value={n}>{n}</option>)}
         </select>
+        {kind !== 'drum' && type !== 'sampler' && (
+          <button className="icon-btn" data-info="Save these settings as your own preset"
+            onClick={() => {
+              const name = prompt('Save preset as…', `My ${schema.label}`)
+              if (name) { saveUserPreset({ name, type, params: Object.fromEntries(params.entries()) }); toast(`Saved “${name}” to My Sounds`) }
+            }}><Icon name="star" size={13} /></button>
+        )}
       </div>
+
+      {type === 'sampler' && <SamplerControls trackId={trackId} inst={inst} />}
 
       {kind === 'drum' ? (
         <div className="drum-panel">
@@ -206,17 +235,165 @@ function FxCard({ trackId, fx }: { trackId: string; fx: Y.Map<any> }) {
   )
 }
 
+function SamplerControls({ trackId, inst }: { trackId: string; inst: Y.Map<any> }) {
+  const [recording, setRecording] = useState(isRecordingSample())
+  const name = inst.get('sampleName') as string | undefined
+  const pickFile = () => {
+    const input = document.createElement('input')
+    input.type = 'file'; input.accept = 'audio/*'
+    input.onchange = async () => {
+      const f = input.files?.[0]; if (!f) return
+      try { const ref = await importSampleFile(f); setSamplerSample(trackId, ref.id, ref.name); toast(`Loaded “${ref.name}”`) }
+      catch { toast('Could not decode that audio file') }
+    }
+    input.click()
+  }
+  const toggleRec = async () => {
+    if (isRecordingSample()) {
+      const ref = await stopSampleRecording(); setRecording(false)
+      if (ref) { setSamplerSample(trackId, ref.id, ref.name); toast('Recorded a sample') }
+    } else {
+      try { await startSampleRecording(); setRecording(true); toast('Recording… click again to stop') }
+      catch { toast('Microphone permission denied') }
+    }
+  }
+  return (
+    <div className="sampler-controls">
+      <span className="sampler-name" data-info="Loaded sample (plays pitched by the notes you play)">{name || 'No sample'}</span>
+      <button className="tbtn" onClick={pickFile} data-info="Import an audio file as the sample"><Icon name="folder" size={12} /> Load</button>
+      <button className={`tbtn ${recording ? 'on' : ''}`} onClick={toggleRec} data-info="Record from your microphone"><Icon name="mic" size={12} /> {recording ? 'Stop' : 'Rec'}</button>
+    </div>
+  )
+}
+
+function MidiFxCard({ trackId, fx }: { trackId: string; fx: Y.Map<any> }) {
+  const type = fx.get('type') as string
+  const id = fx.get('id') as string
+  const on = !!fx.get('on')
+  const params = fx.get('params') as Y.Map<number>
+  const schema = midiFxSchema(type)
+  return (
+    <div className={`device midifx-device ${on ? '' : 'bypassed'}`}>
+      <div className="device-head">
+        <button className={`power ${on ? 'on' : ''}`} data-info="Bypass" onClick={() => setMidiFxOn(trackId, id, !on)}><Icon name="power" size={13} /></button>
+        <span className="device-title"><Icon name={schema.icon} size={13} /> {schema.label}</span>
+        <span className="device-actions">
+          <button className="icon-btn" data-info="Remove" onClick={() => removeMidiFx(trackId, id)}><Icon name="close" size={11} /></button>
+        </span>
+      </div>
+      {schema.params.length === 0
+        ? <div className="midifx-note">Forces notes into the project scale</div>
+        : <div className="knob-row">
+            {schema.params.map(spec => (
+              <Knob key={spec.key} spec={spec} value={params.get(spec.key) ?? spec.def} onChange={v => setMidiFxParam(trackId, id, spec.key, v)} size={34} />
+            ))}
+          </div>}
+    </div>
+  )
+}
+
+function SendsCard({ trackId, track }: { trackId: string; track: Y.Map<any> }) {
+  return (
+    <div className="device sends-device">
+      <div className="device-head"><span className="device-title"><Icon name="send" size={13} /> Sends</span></div>
+      <div className="knob-row">
+        <Knob spec={SEND_A_SPEC} value={track.get('sendA') ?? 0} onChange={v => setSend(trackId, 'sendA', v)} size={36} />
+        <Knob spec={SEND_B_SPEC} value={track.get('sendB') ?? 0} onChange={v => setSend(trackId, 'sendB', v)} size={36} />
+      </div>
+    </div>
+  )
+}
+
+function MacroPanel({ trackId, track }: { trackId: string; track: Y.Map<any> }) {
+  const macros = macrosOf(track)
+  if (!macros) {
+    return <button className="add-fx add-macro" data-info="Add 8 macro knobs — one knob morphs many parameters"
+      onClick={() => ensureMacros(trackId)}><Icon name="macro" size={12} /> Macros</button>
+  }
+  const ranges = (_k: string, dest: string, fxId: string, pkey: string) => targetRange(track, dest, fxId, pkey)
+  const targets = modTargets(track)
+  return (
+    <div className="device macro-device">
+      <div className="device-head">
+        <span className="device-title"><Icon name="macro" size={13} /> Macros</span>
+        <span className="device-actions">
+          <button className="icon-btn" data-info="Randomize all macros (happy accidents)"
+            onClick={() => macros.toArray().forEach((m, i) => { if ((m.get('targets') as Y.Array<any>).length) setMacroValue(trackId, i, Math.random(), ranges) })}><Icon name="dice" size={12} /></button>
+        </span>
+      </div>
+      <div className="macro-grid">
+        {macros.toArray().map((m, i) => {
+          const nTargets = (m.get('targets') as Y.Array<any>).length
+          return (
+            <div key={i} className="macro-cell">
+              <Knob spec={MACRO_SPEC} value={m.get('value') ?? 0} onChange={v => setMacroValue(trackId, i, v, ranges)} size={34}
+                accent={nTargets ? 'var(--accent2)' : undefined} />
+              <button className={`macro-label ${nTargets ? 'mapped' : ''}`}
+                data-info={nTargets ? `${nTargets} mapped — click to remap` : 'Click to map this macro to a parameter'}
+                onClick={e => openMenu(e, [
+                  ...(nTargets ? [{ label: <><Icon name="close" size={11} /> Clear {nTargets} mapping{nTargets > 1 ? 's' : ''}</>, fn: () => clearMacroTargets(trackId, i) } as const, 'sep' as const] : []),
+                  ...targets.map(t => ({ label: t.label, fn: () => addMacroTarget(trackId, i, t.dest, t.fxId, t.pkey) })),
+                ])}>{m.get('name') || `M${i + 1}`}</button>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function ReturnCard({ idx, ret }: { idx: number; ret: Y.Map<any> }) {
+  const type = ret.get('fxType') as string
+  const params = ret.get('params') as Y.Map<number>
+  const schema = fxSchema(type)
+  const gainSpec: ParamSpec = { key: 'g', label: 'Vol', min: -48, max: 6, def: 0, fmt: v => `${v > 0 ? '+' : ''}${v.toFixed(0)}dB` }
+  return (
+    <div className="device return-device">
+      <div className="device-head">
+        <span className="device-title"><Icon name="reverb" size={13} /> {ret.get('name')}</span>
+        <select className="device-select" value={type}
+          data-info="Effect on this return bus"
+          onChange={e => setReturnFxType(idx, e.target.value, defaultsFor(fxSchema(e.target.value).params))}>
+          {EFFECTS.filter(f => f.type !== 'duck').map(f => <option key={f.type} value={f.type}>{f.label}</option>)}
+        </select>
+      </div>
+      <div className="knob-row">
+        {schema.params.map(spec => (
+          <Knob key={spec.key} spec={spec} value={params.get(spec.key) ?? spec.def} onChange={v => setReturnParam(idx, spec.key, v)} size={34} />
+        ))}
+        <Knob spec={gainSpec} value={ret.get('gain') ?? 0} onChange={v => setReturnGain(idx, v)} size={34} />
+      </div>
+    </div>
+  )
+}
+
 export function DeviceRack() {
   const selTrackId = useUI(s => s.selTrackId)
   const track = selTrackId ? trackById(selTrackId) : undefined
   useY(track)
+  useY(returns)
   if (!selTrackId || !track) {
     return <div className="roll-empty">Select a track to see its instrument & effects</div>
   }
   const fxArr = track.get('fx') as Y.Array<Y.Map<any>>
   const lfoArr = track.get('lfos') as Y.Array<Y.Map<any>> | undefined
+  const midiArr = midifxOf(track)
+  const kind = track.get('kind')
   return (
     <div className="rack">
+      {kind !== 'drum' && (
+        <>
+          {midiArr?.toArray().map(m => <MidiFxCard key={m.get('id')} trackId={selTrackId} fx={m} />)}
+          <button className="add-fx add-midi" data-info="Add a live MIDI effect (processes notes before the instrument)"
+            onClick={e => openMenu(e, MIDI_FX.map(mf => ({
+              label: <><Icon name={mf.icon} size={12} /> {mf.label}</>,
+              fn: () => addMidiFx(selTrackId, mf.type, defaultsFor(mf.params)),
+            })))}>
+            <Icon name="plus" size={12} /> MIDI
+          </button>
+          <div className="chain-arrow">→</div>
+        </>
+      )}
       <InstrumentPanel trackId={selTrackId} track={track} />
       <div className="chain-arrow">→</div>
       {fxArr.toArray().map(f => <FxCard key={f.get('id')} trackId={selTrackId} fx={f} />)}
@@ -235,6 +412,10 @@ export function DeviceRack() {
         onClick={() => addLfo(selTrackId)}>
         <Icon name="lfo" size={12} /> LFO
       </button>
+      <MacroPanel trackId={selTrackId} track={track} />
+      <SendsCard trackId={selTrackId} track={track} />
+      <div className="rack-divider" data-info="Shared return buses — every track sends here" />
+      {returns.toArray().map((r, i) => <ReturnCard key={r.get('id')} idx={i} ret={r} />)}
     </div>
   )
 }

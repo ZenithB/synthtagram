@@ -19,6 +19,16 @@ No install, no account, no server. Your project autosaves locally; sharing creat
 - **7 instrument modules** — Analog Poly (with fat/supersaw waves + stereo spread), FM Synth, Mono Bass, Pluck, Dream Keys, Duo Thick (detuned dual-voice with vibrato), and an 8-pad synthesized Drum Kit (no samples — every drum is synthesized live, with per-pad tune/decay/level).
 - **17 effect modules** — EQ3, Filter, tempo-synced Echo & Ping Pong, Reverb, Chorus, Drive, Heat (Chebyshev), Bitcrusher, Compressor, Phaser, Auto Filter, Auto Pan, Tremolo, Vibrato, Stereo Widener, Frequency Shifter. Reorder, bypass, stack freely per track.
 - **LFOs** (Ableton-style) — add LFOs to any track and map each to any knob (instrument or effect). 7 shapes (sine, triangle, saw up/down, square, sample & hold, random), tempo-synced rate *or* free Hz, depth + phase. The LFO modulates the parameter *around its manual value* and snaps back when unmapped — modulation runs locally per client so it never spams the network, with a deterministic S&H/random so collaborators hear the same wobble.
+- **Automation** — draw parameter envelopes per clip (volume, pan, cutoff, any effect knob) right in the piano roll's bottom lane; they play back layered under any LFO on the same parameter.
+- **Send / Return buses** — two shared return tracks (Reverb + Delay) with per-track A/B send knobs, so the whole mix shares one lush space instead of one reverb per track.
+- **Macro racks** — 8 macro knobs per track, each mapping to many parameters; one knob morphs a whole sound, plus a Vary button for happy accidents.
+- **Live MIDI effects** — Scale, Chord, Arpeggiator, Velocity and Random devices that process notes before the instrument (hold one note → arpeggio; force everything in key).
+- **Sidechain pump** — a tempo-synced ducking effect for instant modern movement.
+- **Sampler** — record from your mic or drop in an audio file, played back pitched across the keyboard (samples stored locally per browser).
+- **Clip follow actions** — after N bars a clip can auto-trigger the next / a random / any clip, or stop — turning the Session grid into a generative, self-arranging engine.
+- **Drum step sequencer** — a 16-step × 8-pad grid for drum clips, the fastest way to build a beat (toggle to the piano roll anytime).
+- **Master analyzers** — a spectrum analyzer, oscilloscope and tuner on the master output (click to cycle).
+- **Personal library** — save your own instrument presets and favorite any sound; they live in *My Sounds* and *Favorites* in the browser.
 - **Sound packs** — a searchable browser with **~50 instrument presets** (supersaw anthems to gamelan bells), **12 drum kits** (808 Boom, Trap 808 Long, Techno Bunker, Garage 2-Step, Ambient Glass…), **40 MIDI loops** across drums/bass/chords/melody/arps (click to audition, drag onto the grid), plus a full demo song.
 - **Chord progression generator** — 16 classic progressions (Axis pop, Doo-Wop, Royal Road, 12-bar blues, Andalusian, jazz ii–V–I, neo-soul vamps…) rendered **into your project's key** on drop, with roman-numeral labels and one-click audition.
 - **Export** — render your arrangement, loop region, or a scene to WAV entirely in the browser; export per-track **stems**; save/import project files.
