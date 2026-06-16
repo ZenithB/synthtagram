@@ -875,23 +875,65 @@ export function initIfEmpty(defaultProject: ProjectJSON): boolean {
   return true
 }
 
+// ---------- lossless full-document snapshot ----------
+// The ProjectJSON path (exportProject/loadProject) is intentionally lossy — it
+// predates sends, LFOs, macros, MIDI fx, return buses, automation and follow
+// actions. For the room hand-off we carry the ENTIRE Yjs document as a binary
+// update instead, so nothing is dropped and all internal ids stay valid.
+function u8ToB64(u8: Uint8Array): string {
+  let s = ''
+  const chunk = 0x8000
+  for (let i = 0; i < u8.length; i += chunk) s += String.fromCharCode(...u8.subarray(i, i + chunk))
+  return btoa(s)
+}
+function b64ToU8(b64: string): Uint8Array {
+  const s = atob(b64)
+  const u8 = new Uint8Array(s.length)
+  for (let i = 0; i < s.length; i++) u8[i] = s.charCodeAt(i)
+  return u8
+}
+export function encodeDocState(): string {
+  return u8ToB64(Y.encodeStateAsUpdate(doc))
+}
+export function applyDocState(b64: string) {
+  Y.applyUpdate(doc, b64ToU8(b64), LOCAL)
+}
+
 // ---------- room creation (carry current project into a fresh shared room) ----------
+// Set a flag so the global hashchange listener doesn't ALSO reload — otherwise
+// the page reloads twice and the second boot (after the carry was consumed)
+// lands on an empty doc, wiping the project.
 export function createRoomAndGo(): string {
   const rid = nanoid(10)
-  sessionStorage.setItem('sf-carry', JSON.stringify(exportProject()))
+  // full lossless snapshot — every track device, send, LFO, macro, return bus,
+  // automation envelope and follow action comes along.
+  sessionStorage.setItem('sf-carry-bin', encodeDocState())
+  ;(window as any).__sfNav = true
   location.hash = `r=${rid}`
   location.reload()
   return rid
 }
 
 export function leaveRoomAndGo() {
+  sessionStorage.setItem('sf-carry-bin', encodeDocState())
+  ;(window as any).__sfNav = true
   location.hash = ''
   location.reload()
 }
 
-export function maybeTakeCarriedProject(): ProjectJSON | null {
+/** Apply a project carried across a room transition into the (fresh) doc. Returns true if applied. */
+export function maybeTakeCarried(): boolean {
+  const bin = sessionStorage.getItem('sf-carry-bin')
+  if (bin) {
+    sessionStorage.removeItem('sf-carry-bin')
+    if (isDocEmpty()) { applyDocState(bin); return true }
+    return false
+  }
+  // legacy JSON carry (older tabs mid-transition)
   const raw = sessionStorage.getItem('sf-carry')
-  if (!raw) return null
-  sessionStorage.removeItem('sf-carry')
-  try { return JSON.parse(raw) } catch { return null }
+  if (raw) {
+    sessionStorage.removeItem('sf-carry')
+    if (isDocEmpty()) { try { loadProject(JSON.parse(raw), 'Start shared session'); return true } catch { /* ignore */ } }
+  }
+  return false
 }
