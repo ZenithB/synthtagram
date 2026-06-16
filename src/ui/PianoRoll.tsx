@@ -392,8 +392,11 @@ export function PianoRoll() {
 
   const locate = (e: React.PointerEvent | React.MouseEvent) => {
     const rect = canvasRef.current!.getBoundingClientRect()
-    const x = e.clientX - rect.left
-    const y = e.clientY - rect.top
+    // getBoundingClientRect/clientX are in the zoomed (visual) space; the canvas
+    // draws in layout px. Divide by the UI zoom to map a click to the grid.
+    const z = ui.uiZoom || 1
+    const x = (e.clientX - rect.left) / z
+    const y = (e.clientY - rect.top) / z
     const pxPerTick = view.current.pxPerBar / BAR
     const tick = (x - KEY_W + view.current.scrollX) / pxPerTick
     const row = Math.floor((y + view.current.scrollY) / rowH)

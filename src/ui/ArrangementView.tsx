@@ -60,7 +60,11 @@ export function ArrangementView() {
   useY(arr)
   useY(meta)
   const zoom = useUI(s => s.zoomPxPerBar)
+  const uiZoom = useUI(s => s.uiZoom)
   const pxPerTick = zoom / BAR
+  // CSS UI-zoom factor: client coords are visual, the timeline lays out in
+  // layout px — divide by this to map clicks/drags to ticks.
+  const z = uiZoom || 1
   const [drag, setDrag] = useState<DragState>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -80,7 +84,7 @@ export function ArrangementView() {
 
   const seekFromEvent = (e: React.MouseEvent, el: HTMLElement) => {
     const rect = el.getBoundingClientRect()
-    const t = Math.max(0, (e.clientX - rect.left) / pxPerTick)
+    const t = Math.max(0, (e.clientX - rect.left) / z / pxPerTick)
     engine.seekArr(snap(t, e.shiftKey))
   }
 
@@ -111,11 +115,11 @@ export function ArrangementView() {
   const onPointerMove = (e: React.PointerEvent) => {
     if (!drag) return
     if (drag.type === 'move') {
-      setDrag({ ...drag, dx: (e.clientX - drag.startX) / pxPerTick, dLane: Math.round((e.clientY - drag.startY) / LANE_H), copy: e.altKey || drag.copy })
+      setDrag({ ...drag, dx: (e.clientX - drag.startX) / z / pxPerTick, dLane: Math.round((e.clientY - drag.startY) / z / LANE_H), copy: e.altKey || drag.copy })
     } else if (drag.type === 'resize') {
-      setDrag({ ...drag, dLen: (e.clientX - drag.startX) / pxPerTick })
+      setDrag({ ...drag, dLen: (e.clientX - drag.startX) / z / pxPerTick })
     } else if (drag.type === 'loop') {
-      const dt = (e.clientX - drag.startX) / pxPerTick
+      const dt = (e.clientX - drag.startX) / z / pxPerTick
       let s = drag.origStart
       let en = drag.origEnd
       if (drag.edge === 'start') s = clamp(snap(drag.origStart + dt, e.shiftKey), 0, en - BAR)
@@ -250,8 +254,8 @@ export function ArrangementView() {
             style={{ height: trackArr.length * LANE_H }}
             onDoubleClick={e => {
               const rect = e.currentTarget.getBoundingClientRect()
-              const t = snap((e.clientX - rect.left) / pxPerTick, false)
-              const lane = Math.floor((e.clientY - rect.top) / LANE_H)
+              const t = snap((e.clientX - rect.left) / z / pxPerTick, false)
+              const lane = Math.floor((e.clientY - rect.top) / z / LANE_H)
               const tid = trackArr[lane]?.get('id')
               if (!tid) return
               const id = addArrClip(tid, Math.max(0, t), { name: 'Clip', color: trackArr[lane].get('color') ?? 0, len: BAR * 4, notes: {} })
@@ -264,8 +268,8 @@ export function ArrangementView() {
               const progName = e.dataTransfer.getData('stg/prog')
               const clipSrc = e.dataTransfer.getData('stg/clip')
               const rect = e.currentTarget.getBoundingClientRect()
-              const t = Math.max(0, snap((e.clientX - rect.left) / pxPerTick, false))
-              const lane = Math.floor((e.clientY - rect.top) / LANE_H)
+              const t = Math.max(0, snap((e.clientX - rect.left) / z / pxPerTick, false))
+              const lane = Math.floor((e.clientY - rect.top) / z / LANE_H)
               const tid = trackArr[lane]?.get('id')
               if (loopName) {
                 const loop = MIDI_LOOPS.find(l => l.name === loopName)
