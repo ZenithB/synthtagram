@@ -21,6 +21,9 @@ const LANE_H = 64
 const MAX_P = 108
 const MIN_P = 21
 
+// Note clipboard, shared across clip switches (copy here, paste there).
+let noteClip: Note[] = []
+
 type Drag =
   | { type: 'move'; ids: string[]; orig: Map<string, Note>; startTick: number; startPitch: number; dTick: number; dPitch: number; copy: boolean; moved: boolean }
   | { type: 'resize'; ids: string[]; orig: Map<string, Note>; startTick: number; dTick: number }
@@ -324,7 +327,7 @@ export function PianoRoll() {
     let p = pitch
     if (!isDrum && snapScale) p = snapToScale(p, root, scaleId)
     const s = floorT(tick)
-    const id = addNote(clipMap, { p, s, d: gridTicks, v: ui.velo, pr: 1 })
+    const id = addNote(clipMap, { p, s, d: gridTicks, v: ui.velo, pr: ui.drawProb })
     sel.current = new Set([id])
     engine.previewOn(trackId, p, ui.velo)
     setTimeout(() => engine.previewOff(trackId, p), 180)
@@ -484,11 +487,90 @@ export function PianoRoll() {
     e.preventDefault()
     if (!clipMap) return
     const loc = locate(e)
-    const hit = !loc.inKeys && !loc.inLane ? hitNote(loc.tick, loc.pitch) : null
+    if (loc.inKeys) return
+    const clipLen = clipMap.get('len') ?? BAR
+    const atTick = loc.tick
+
+    // ---- shared note ops ----
+    const copyIds = (ids: string[]) => {
+      const a = notesOf(clipMap).filter(([id]) => ids.includes(id)).map(([, n]) => ({ ...n }))
+      if (a.length) noteClip = a
+    }
+    const pasteAt = (tick: number) => {
+      if (!noteClip.length) return
+      const minS = Math.min(...noteClip.map(n => n.s))
+      const off = floorT(tick) - minS
+      const ids = addNotes(clipMap, noteClip.map(n => ({ ...n, s: Math.max(0, n.s + off) })), 'Paste notes')
+      sel.current = new Set(ids); bump()
+    }
+    const duplicateIds = (ids: string[]) => {
+      const entries = notesOf(clipMap).filter(([id]) => ids.includes(id))
+      if (!entries.length) return
+      const minS = Math.min(...entries.map(([, n]) => n.s))
+      const maxE = Math.max(...entries.map(([, n]) => n.s + n.d))
+      const span = Math.max(gridTicks, Math.ceil((maxE - minS) / gridTicks) * gridTicks)
+      const newIds = addNotes(clipMap, entries.map(([, n]) => ({ ...n, s: n.s + span })), 'Duplicate notes')
+      sel.current = new Set(newIds); bump()
+    }
+    const selEntries = (ids: string[]) => notesOf(clipMap).filter(([id]) => ids.includes(id))
+    const replaceSel = (ids: string[], notesObj: Record<string, Note>, label: string) => {
+      deleteNotes(clipMap, ids, label)
+      const newIds = addNotes(clipMap, Object.values(notesObj), label)
+      sel.current = new Set(newIds); bump()
+    }
+    const setOnSel = (ids: string[], patch: Partial<Note>, label: string) =>
+      updateNotes(clipMap, ids.map(id => [id, patch]), label)
+
+    const VELS = [0.3, 0.6, 0.85, 1]
+    const chip = (active: boolean, label: string, fn: () => void) =>
+      <button key={label} className={`ctx-chip ${active ? 'on' : ''}`} onClick={fn}>{label}</button>
+
+    const hit = !loc.inLane ? hitNote(atTick, loc.pitch) : null
+
     if (hit) {
-      deleteNotes(clipMap, sel.current.has(hit[0]) ? [...sel.current] : [hit[0]], 'Delete notes')
-      sel.current = new Set()
-      bump()
+      // operate on the whole selection if the clicked note is part of it
+      let ids: string[]
+      if (sel.current.has(hit[0])) ids = [...sel.current]
+      else { sel.current = new Set([hit[0]]); ids = [hit[0]]; bump() }
+      const n = ids.length
+
+      openMenu(e, [
+        { label: <><Icon name="note" size={12} /> Duplicate {n > 1 ? `selection (${n})` : ''}</>, fn: () => duplicateIds(ids) },
+        { label: <><Icon name="grid" size={12} /> Copy {n > 1 ? `(${n})` : ''}</>, fn: () => copyIds(ids) },
+        { label: <><Icon name="grid" size={12} /> Cut</>, fn: () => { copyIds(ids); deleteNotes(clipMap, ids, 'Cut notes'); sel.current = new Set(); bump() } },
+        { label: <><Icon name="grid" size={12} /> Paste here</>, fn: () => pasteAt(atTick), disabled: !noteClip.length },
+        { label: <><Icon name="close" size={12} /> Delete</>, fn: () => { deleteNotes(clipMap, ids, 'Delete notes'); sel.current = new Set(); bump() }, danger: true },
+        'sep',
+        { label: <><Icon name="chord" size={12} /> Chordify</>, fn: () => replaceSel(ids, tools.chordify(selEntries(ids), root, scaleId), 'Chordify') },
+        { label: <><Icon name="arpUp" size={12} /> Arpeggiate</>, fn: () => replaceSel(ids, tools.arpeggiate(selEntries(ids), gridTicks, 'up'), 'Arpeggiate') },
+        { label: <><Icon name="dice" size={12} /> Humanize</>, fn: () => setOnSelHumanize(ids) },
+        { label: <><Icon name="grid" size={12} /> Quantize</>, fn: () => updateNotes(clipMap, tools.quantize(selEntries(ids), gridTicks, 1), 'Quantize') },
+        { label: <><Icon name="legato" size={12} /> Legato</>, fn: () => updateNotes(clipMap, tools.legato(selEntries(ids), clipLen), 'Legato') },
+        { label: <><Icon name="reverse" size={12} /> Reverse</>, fn: () => updateNotes(clipMap, tools.reverse(selEntries(ids), clipLen), 'Reverse') },
+        'sep',
+        { custom: <div className="ctx-row"><span className="ctx-row-label">Velocity</span>{VELS.map(v => chip(false, `${Math.round(v * 100)}`, () => setOnSel(ids, { v }, 'Set velocity')))}</div> },
+        { custom: <div className="ctx-row"><span className="ctx-row-label">Chance</span>{[0.25, 0.5, 0.75, 1].map(v => chip(false, `${Math.round(v * 100)}`, () => setOnSel(ids, { pr: v }, 'Set chance')))}</div> },
+      ])
+      return
+    }
+
+    // ---- blank-space menu ----
+    const items: any[] = [
+      { label: <><Icon name="pencil" size={12} /> Add note here</>, fn: () => addAt(atTick, loc.pitch) },
+      { label: <><Icon name="grid" size={12} /> Paste here</>, fn: () => pasteAt(atTick), disabled: !noteClip.length },
+      { label: <><Icon name="note" size={12} /> Select all</>, fn: () => { sel.current = new Set(notesOf(clipMap).map(([id]) => id)); bump() } },
+    ]
+    if (drawMode) {
+      items.push('sep')
+      items.push({ custom: <div className="ctx-row ctx-row-head"><Icon name="pencil" size={11} /> Pen defaults</div> })
+      items.push({ custom: <div className="ctx-row"><span className="ctx-row-label">Length</span>{GRID_OPTIONS.map(g => chip(gridTicks === g.ticks, g.label, () => setUI({ gridTicks: g.ticks })))}</div> })
+      items.push({ custom: <div className="ctx-row"><span className="ctx-row-label">Velocity</span>{VELS.map(v => chip(Math.abs(ui.velo - v) < 0.06, `${Math.round(v * 100)}`, () => setUI({ velo: v })))}</div> })
+      items.push({ custom: <div className="ctx-row"><span className="ctx-row-label">Chance</span>{[0.25, 0.5, 0.75, 1].map(v => chip(Math.abs(ui.drawProb - v) < 0.06, `${Math.round(v * 100)}`, () => setUI({ drawProb: v })))}</div> })
+    }
+    openMenu(e, items)
+
+    function setOnSelHumanize(ids: string[]) {
+      updateNotes(clipMap!, tools.humanize(selEntries(ids)), 'Humanize')
     }
   }
 

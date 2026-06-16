@@ -1,7 +1,7 @@
 // Top bar: transport, tempo/swing/key, view switch, undo, export, share, presence.
 
 import React, { useRef, useState, useSyncExternalStore } from 'react'
-import { LAUNCH_Q_OPTIONS } from '../types'
+import { LAUNCH_Q_OPTIONS, clamp } from '../types'
 import { meta, setBpm, setSwing, setTitle, setKeyScale, setLaunchQ } from '../state/doc'
 import { undoMgr } from '../state/undo'
 import { engine } from '../audio/engine'
@@ -61,8 +61,19 @@ export function Topbar() {
   const metronome = useUI(s => s.metronome)
   const theme = useUI(s => s.theme)
   const chatUnread = useUI(s => s.chatUnread)
+  const uiZoom = useUI(s => s.uiZoom)
   const taps = useRef<number[]>([])
   const [kbdOn, setKbdOn] = useState(isKbdEnabled())
+  const nudgeZoom = (d: number) => setUI({ uiZoom: clamp(Math.round((ui.uiZoom + d) * 20) / 20, 0.6, 1.6) })
+
+  const moreMenu = (e: React.MouseEvent) => openMenu(e, [
+    { label: <><Icon name="clock" size={12} /> Undo history</>, fn: () => setUI({ historyOpen: !ui.historyOpen }) },
+    { label: <><Icon name="more" size={12} /> Command palette &nbsp;⌘K</>, fn: () => setUI({ paletteOpen: true }) },
+    { label: <><Icon name="keys" size={12} /> Keyboard piano: {kbdOn ? 'On' : 'Off'}</>, fn: () => { setKbdEnabled(!isKbdEnabled()); setKbdOn(isKbdEnabled()) } },
+    { label: <><Icon name={theme === 'dark' ? 'sun' : 'moon'} size={12} /> Theme: {theme === 'dark' ? 'Dark' : 'Light'}</>, fn: () => setUI({ theme: theme === 'dark' ? 'light' : 'dark' }) },
+    'sep',
+    { label: <><Icon name="map" size={12} /> Help & shortcuts</>, fn: () => setUI({ helpOpen: true }) },
+  ])
 
   const tap = () => {
     const now = performance.now()
@@ -143,18 +154,17 @@ export function Topbar() {
 
       <div className="spacer" />
 
+      <div className="tgroup zoom-group">
+        <button className="icon-btn" data-info="Zoom the interface out" onClick={() => nudgeZoom(-0.1)}><Icon name="zoomOut" /></button>
+        <span className="zoom-pct" data-info="Interface zoom — click to reset to 100%" onClick={() => setUI({ uiZoom: 1 })}>{Math.round(uiZoom * 100)}%</span>
+        <button className="icon-btn" data-info="Zoom the interface in" onClick={() => nudgeZoom(0.1)}><Icon name="zoomIn" /></button>
+      </div>
+
       <div className="tgroup">
         <button className="icon-btn" data-info="Undo your last edit (Ctrl/Cmd+Z) — only undoes YOUR changes" onClick={() => undoMgr.undo()}><Icon name="undo" /></button>
         <button className="icon-btn" data-info="Redo (Ctrl/Cmd+Shift+Z)" onClick={() => undoMgr.redo()}><Icon name="redo" /></button>
-        <button className="icon-btn" data-info="Undo history — see & rewind your edits" onClick={() => setUI({ historyOpen: !ui.historyOpen })}><Icon name="clock" /></button>
-        <button className="icon-btn" data-info="Command palette (Ctrl/Cmd+K)" onClick={() => setUI({ paletteOpen: true })}>⌘K</button>
-        <button className={`icon-btn ${kbdOn ? 'lit' : ''}`} data-info="Computer-keyboard piano on/off (A–K play notes, Z/X octave)"
-          onClick={() => { setKbdEnabled(!isKbdEnabled()); setKbdOn(isKbdEnabled()) }}><Icon name="keys" /></button>
         <button className="icon-btn" data-info="Export audio & project" onClick={exportMenu}><Icon name="download" /></button>
-        <button className="icon-btn" data-info="Toggle light/dark theme" onClick={() => setUI({ theme: theme === 'dark' ? 'light' : 'dark' })}>
-          <Icon name={theme === 'dark' ? 'sun' : 'moon'} />
-        </button>
-        <button className="icon-btn" data-info="Help & shortcuts (?)" onClick={() => setUI({ helpOpen: true })}>?</button>
+        <button className="icon-btn" data-info="More: history, palette, keyboard piano, theme, help" onClick={moreMenu}><Icon name="more" /></button>
       </div>
 
       <div className="tgroup">

@@ -53,7 +53,15 @@ const ICONS: Record<string, React.ReactNode> = {
   </>,
   chevL: <path d="M10 3.2 L5.4 8 L10 12.8" />,
   chevR: <path d="M6 3.2 L10.6 8 L6 12.8" />,
+  chevDown: <path d="M3.2 6 L8 10.6 L12.8 6" />,
   plus: <path d="M8 3 v10 M3 8 h10" />,
+  minus: <path d="M3 8 h10" />,
+  more: <><circle cx="3.6" cy="8" r="1.3" {...F} /><circle cx="8" cy="8" r="1.3" {...F} /><circle cx="12.4" cy="8" r="1.3" {...F} /></>,
+  zoomIn: <><circle cx="6.6" cy="6.6" r="3.8" /><line x1="9.5" y1="9.5" x2="14" y2="14" /><path d="M6.6 5 v3.2 M5 6.6 h3.2" /></>,
+  zoomOut: <><circle cx="6.6" cy="6.6" r="3.8" /><line x1="9.5" y1="9.5" x2="14" y2="14" /><path d="M5 6.6 h3.2" /></>,
+  grip: <path d="M3 6.4 H13 M3 9.6 H13" />,
+  lfo: <><circle cx="8" cy="8" r="6" /><path d="M3.4 8 C4.5 4.6, 6 4.6, 7 8 S9.5 11.4, 10.6 8 12.6 5.4, 12.6 8" /></>,
+  map: <><circle cx="8" cy="8" r="2.4" /><path d="M8 1.6 v2.2 M8 12.2 v2.2 M1.6 8 h2.2 M12.2 8 h2.2" /></>,
   pencil: <>
     <path d="M3 13 L3.6 10.4 L10.8 3.2 L12.8 5.2 L5.6 12.4 Z" />
     <line x1="9.6" y1="4.4" x2="11.6" y2="6.4" />

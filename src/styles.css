@@ -444,3 +444,39 @@ button { cursor: pointer; background: none; border: none; }
 .track-head.selected .track-icon { color: var(--accent); }
 .onboard-tips .icon { color: var(--accent); margin-right: 6px; }
 .lane-toggle .tbtn { gap: 0; }
+
+/* ---------------- resizable detail panel ---------------- */
+.detail { position: relative; }
+.detail-resize { position: absolute; top: -3px; left: 0; right: 0; height: 8px; cursor: ns-resize; z-index: 20; }
+.detail-resize::before {
+  content: ''; position: absolute; left: 50%; top: 3px; width: 40px; height: 3px;
+  transform: translateX(-50%); background: var(--bg3); border-radius: 2px; transition: background 0.12s;
+}
+.detail-resize:hover::before { background: var(--accent); }
+
+/* ---------------- top-bar zoom ---------------- */
+.zoom-group { gap: 1px; }
+.zoom-pct {
+  font-size: 11px; color: var(--dim); min-width: 36px; text-align: center;
+  cursor: pointer; font-variant-numeric: tabular-nums;
+}
+.zoom-pct:hover { color: var(--accent); }
+
+/* ---------------- LFO devices ---------------- */
+.lfo-device { border-color: color-mix(in srgb, var(--accent2) 45%, var(--border)); }
+.lfo-device .device-title .icon { color: var(--accent2); }
+.lfo-row { display: flex; align-items: center; gap: 6px; margin-top: 5px; }
+.lfo-target { max-width: 156px; }
+.lfo-scope { position: relative; width: 52px; height: 7px; background: var(--bg0); border: 1px solid var(--border); border-radius: 4px; margin: 0 4px; overflow: hidden; }
+.lfo-scope-mid { position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: var(--border); }
+.lfo-scope-dot { position: absolute; top: 50%; width: 6px; height: 6px; border-radius: 50%; background: var(--accent2); transform: translate(-50%, -50%); box-shadow: 0 0 5px var(--accent2); }
+.add-lfo .icon { color: var(--accent2); }
+.add-lfo:hover { color: var(--accent2); border-color: var(--accent2); }
+
+/* ---------------- context-menu value rows ---------------- */
+.ctx-row { display: flex; align-items: center; gap: 4px; padding: 3px 8px; }
+.ctx-row-head { color: var(--dim); font-size: 10px; text-transform: uppercase; letter-spacing: 0.7px; gap: 6px; padding-top: 5px; }
+.ctx-row-label { width: 52px; color: var(--dim); font-size: 11px; flex-shrink: 0; }
+.ctx-chip { padding: 2px 7px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg2); color: var(--text); font-size: 11px; font-variant-numeric: tabular-nums; }
+.ctx-chip:hover { border-color: var(--accent); color: var(--accent); }
+.ctx-chip.on { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }

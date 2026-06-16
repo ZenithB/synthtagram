@@ -112,6 +112,7 @@ function yTrack(t: TrackJSON) {
   const fxArr = new Y.Array<Y.Map<any>>()
   fxArr.push(t.fx.map(yFx))
   m.set('fx', fxArr)
+  m.set('lfos', new Y.Array<Y.Map<any>>())
   m.set('gain', t.gain)
   m.set('pan', t.pan)
   m.set('mute', t.mute)
@@ -310,6 +311,74 @@ export function setFxOn(trackId: string, fxId: string, on: boolean) {
     const i = fxIndex(t, fxId)
     if (i >= 0) (t.get('fx') as Y.Array<Y.Map<any>>).get(i).set('on', on)
   })
+}
+
+// ---------- LFOs (modulation sources) ----------
+function lfoArr(t: Y.Map<any>): Y.Array<Y.Map<any>> {
+  let a = t.get('lfos') as Y.Array<Y.Map<any>> | undefined
+  if (!a) { a = new Y.Array<Y.Map<any>>(); t.set('lfos', a) } // legacy tracks
+  return a
+}
+function lfoIndex(t: Y.Map<any>, lfoId: string) {
+  const a = t.get('lfos') as Y.Array<Y.Map<any>> | undefined
+  if (!a) return -1
+  for (let i = 0; i < a.length; i++) if (a.get(i).get('id') === lfoId) return i
+  return -1
+}
+
+export function addLfo(trackId: string): string {
+  const id = id8()
+  mutate('Add LFO', () => {
+    const t = trackById(trackId)
+    if (!t) return
+    const m = new Y.Map<any>()
+    m.set('id', id)
+    m.set('on', true)
+    m.set('shape', 0)   // sine
+    m.set('sync', 1)
+    m.set('rate', 5)    // 1/4
+    m.set('hz', 1)
+    m.set('depth', 0.5)
+    m.set('phase', 0)
+    m.set('dest', '')   // 'inst' | 'fx'
+    m.set('fxId', '')
+    m.set('pkey', '')   // target param key
+    lfoArr(t).push([m])
+  })
+  return id
+}
+
+export function removeLfo(trackId: string, lfoId: string) {
+  mutate('Remove LFO', () => {
+    const t = trackById(trackId)
+    if (!t) return
+    const i = lfoIndex(t, lfoId)
+    if (i >= 0) (t.get('lfos') as Y.Array<Y.Map<any>>).delete(i)
+  })
+}
+
+export function setLfoField(trackId: string, lfoId: string, key: string, val: any, label = 'Edit LFO') {
+  mutate(label, () => {
+    const t = trackById(trackId)
+    if (!t) return
+    const i = lfoIndex(t, lfoId)
+    if (i >= 0) (t.get('lfos') as Y.Array<Y.Map<any>>).get(i).set(key, val)
+  })
+}
+
+export function setLfoTarget(trackId: string, lfoId: string, dest: string, fxId: string, pkey: string) {
+  mutate('LFO target', () => {
+    const t = trackById(trackId)
+    if (!t) return
+    const i = lfoIndex(t, lfoId)
+    if (i < 0) return
+    const m = (t.get('lfos') as Y.Array<Y.Map<any>>).get(i)
+    m.set('dest', dest); m.set('fxId', fxId); m.set('pkey', pkey)
+  })
+}
+
+export function lfosOf(t: Y.Map<any>): Y.Array<Y.Map<any>> | undefined {
+  return t.get('lfos') as Y.Array<Y.Map<any>> | undefined
 }
 
 // ---------- scenes ----------

@@ -12,8 +12,11 @@ export type UIState = {
   selClip: ClipRef | null
   detailOpen: boolean
   detailTab: 'clip' | 'devices'
+  detailHeight: number
+  uiZoom: number
   gridTicks: number
   drawMode: boolean
+  drawProb: number
   snapScale: boolean
   lane: 'vel' | 'prob'
   recording: boolean
@@ -40,6 +43,8 @@ export type UIState = {
 const savedName = localStorage.getItem('sf-name')
 const savedColor = localStorage.getItem('sf-color')
 const savedTheme = (localStorage.getItem('sf-theme') as 'dark' | 'light') || 'dark'
+const savedHeight = Number(localStorage.getItem('sf-detail-h')) || 318
+const savedZoom = Number(localStorage.getItem('sf-zoom')) || 1
 
 export const ui: UIState = {
   view: 'session',
@@ -48,8 +53,11 @@ export const ui: UIState = {
   selClip: null,
   detailOpen: false,
   detailTab: 'clip',
+  detailHeight: savedHeight,
+  uiZoom: savedZoom,
   gridTicks: STEP16,
   drawMode: false,
+  drawProb: 1,
   snapScale: false,
   lane: 'vel',
   recording: false,
@@ -80,6 +88,8 @@ export function setUI(patch: Partial<UIState>) {
   if (patch.userName !== undefined) localStorage.setItem('sf-name', ui.userName)
   if (patch.userColor !== undefined) localStorage.setItem('sf-color', ui.userColor)
   if (patch.theme !== undefined) localStorage.setItem('sf-theme', ui.theme)
+  if (patch.detailHeight !== undefined) localStorage.setItem('sf-detail-h', String(ui.detailHeight))
+  if (patch.uiZoom !== undefined) localStorage.setItem('sf-zoom', String(ui.uiZoom))
   listeners.forEach(l => l())
 }
 

@@ -255,3 +255,45 @@ export function defaultsFor(specs: ParamSpec[]): Record<string, number> {
   specs.forEach(s => { out[s.key] = s.def })
   return out
 }
+
+// ----------------- LFO (modulation source) -----------------
+// Modelled on Ableton's LFO device: a low-frequency oscillator that modulates
+// a mapped parameter around its manual value. Shape + rate (tempo-synced or
+// free Hz) + depth + phase. Runs locally per client (see engine modulation loop).
+
+export const LFO_SHAPES = ['Sine', 'Triangle', 'Saw ↑', 'Saw ↓', 'Square', 'S&H', 'Random']
+
+export const LFO_DIVS = ['8 bar', '4 bar', '2 bar', '1 bar', '1/2', '1/4', '1/8', '1/8T', '1/16']
+// cycle length in transport ticks (PPQ=96 ⇒ quarter = 96, bar = 384)
+export const LFO_DIV_TICKS = [8 * 384, 4 * 384, 2 * 384, 384, 192, 96, 48, 32, 24]
+
+export const LFO_PARAMS: ParamSpec[] = [
+  { key: 'depth', label: 'Depth', min: 0, max: 1, def: 0.5, fmt: fmtPct },
+  { key: 'phase', label: 'Phase', min: 0, max: 1, def: 0, fmt: v => `${Math.round(v * 360)}°` },
+  { key: 'hz', label: 'Rate', min: 0.01, max: 30, def: 1, exp: true, fmt: v => `${v.toFixed(2)}Hz` },
+]
+
+// Deterministic [0,1) hash so Sample&Hold / Random match across collaborators.
+function lfoHash(n: number) {
+  const x = Math.sin(n * 127.1 + 311.7) * 43758.5453
+  return x - Math.floor(x)
+}
+
+/** LFO waveform value in [-1, 1] for a given shape and (unwrapped) phase. */
+export function lfoShapeValue(shape: number, phase: number): number {
+  const f = phase - Math.floor(phase) // [0,1)
+  switch (shape) {
+    case 1: return f < 0.5 ? 4 * f - 1 : 3 - 4 * f          // triangle
+    case 2: return 2 * f - 1                                 // saw up
+    case 3: return 1 - 2 * f                                 // saw down
+    case 4: return f < 0.5 ? 1 : -1                          // square
+    case 5: return lfoHash(Math.floor(phase)) * 2 - 1        // sample & hold
+    case 6: {                                                // smooth random
+      const a = lfoHash(Math.floor(phase))
+      const b = lfoHash(Math.floor(phase) + 1)
+      const t = f * f * (3 - 2 * f)                          // smoothstep
+      return (a + (b - a) * t) * 2 - 1
+    }
+    default: return Math.sin(f * Math.PI * 2)                // sine
+  }
+}

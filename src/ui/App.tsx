@@ -20,11 +20,39 @@ export function App() {
   const view = useUI(s => s.view)
   const detailOpen = useUI(s => s.detailOpen)
   const detailTab = useUI(s => s.detailTab)
+  const detailHeight = useUI(s => s.detailHeight)
+  const uiZoom = useUI(s => s.uiZoom)
   const theme = useUI(s => s.theme)
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
   }, [theme])
+
+  useEffect(() => {
+    // CSS zoom scales the whole UI (incl. portaled menus/modals) and reflows.
+    ;(document.documentElement.style as any).zoom = String(uiZoom)
+  }, [uiZoom])
+
+  // Drag the divider above the detail panel to resize it. Derives the zoom
+  // factor from the element itself so it stays accurate under UI zoom.
+  const startDetailResize = (e: React.PointerEvent) => {
+    e.preventDefault()
+    const detailEl = (e.currentTarget as HTMLElement).parentElement as HTMLElement
+    const rect = detailEl.getBoundingClientRect()
+    const ratio = (rect.height / (ui.detailHeight || rect.height)) || 1
+    const startY = e.clientY
+    const startH = ui.detailHeight
+    const move = (ev: PointerEvent) => {
+      const delta = (startY - ev.clientY) / ratio
+      setUI({ detailHeight: Math.max(150, Math.min(900, Math.round(startH + delta))) })
+    }
+    const up = () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+  }
 
   // Info View: hover help in the status bar (the Ableton trick)
   useEffect(() => {
@@ -120,7 +148,8 @@ export function App() {
         <UndoPanel />
       </div>
       {detailOpen && (
-        <div className="detail">
+        <div className="detail" style={{ height: detailHeight }}>
+          <div className="detail-resize" data-info="Drag up/down to resize the editor panel" onPointerDown={startDetailResize} />
           <div className="detail-tabs">
             <button className={`dtab ${detailTab === 'clip' ? 'on' : ''}`} onClick={() => setUI({ detailTab: 'clip' })} data-info="Edit the selected clip's notes">Clip</button>
             <button className={`dtab ${detailTab === 'devices' ? 'on' : ''}`} onClick={() => setUI({ detailTab: 'devices' })} data-info="The selected track's instrument & effect chain">Devices</button>

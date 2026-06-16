@@ -215,7 +215,7 @@ export function ContextMenuHost() {
     <div className="ctx-menu" style={{ left: x, top: y }} onPointerDown={e => e.stopPropagation()}>
       {menu.items.map((it, i) => {
         if (it === 'sep') return <div key={i} className="ctx-sep" />
-        if ('custom' in it) return <div key={i} className="ctx-custom" onClick={() => setMenu(null)}>{it.custom}</div>
+        if ('custom' in it) return <div key={i} className="ctx-custom" onPointerDown={e => e.stopPropagation()}>{it.custom}</div>
         return (
           <button key={i} className={`ctx-item ${it.danger ? 'danger' : ''}`} disabled={it.disabled}
             onClick={() => { setMenu(null); it.fn() }}>

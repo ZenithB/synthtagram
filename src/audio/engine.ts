@@ -13,6 +13,7 @@ import {
   createClip, trackById,
 } from '../state/doc'
 import { makeInstrument, makeEffect, Inst, Fx } from './devices'
+import { instSchema, fxSchema, lfoShapeValue, LFO_DIV_TICKS } from './schema'
 import { setUI, toast, ui } from '../state/store'
 
 const STOP = '__stop__'
@@ -48,6 +49,11 @@ class Engine {
   private partTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private arrTimer: ReturnType<typeof setTimeout> | null = null
   private pendingRec = new Map<number, { clipMap: Y.Map<any>; startInClip: number; vel: number }>()
+
+  // ---- LFO modulation (local per client; runs at frame rate) ----
+  private modRAF = 0
+  private lfoVals = new Map<string, number>()  // lfoId -> current raw value [-1,1]
+  private activeMod = new Map<string, { tid: string; dest: string; fxId: string; pkey: string }>()
 
   // ---- tiny emitter so React can follow launch-state changes ----
   version = 0
@@ -107,8 +113,108 @@ class Engine {
     clips.observe(this.onClipsShallow)
     arr.observeDeep(this.onArrDeep)
     meta.observe(this.onMeta)
+    this.startModLoop()
     setUI({ audioReady: true })
     this.emit()
+  }
+
+  // ---------------- LFO modulation loop ----------------
+  // Each client locally oscillates mapped parameters around their doc base
+  // value. The LFO *config* is shared (Yjs), the per-frame modulation is local
+  // — same model as playback. Restores the base value when a mapping is removed.
+
+  private startModLoop() {
+    const tick = () => {
+      this.modRAF = requestAnimationFrame(tick)
+      try { this.applyModulation() } catch { /* never kill the loop */ }
+    }
+    this.modRAF = requestAnimationFrame(tick)
+  }
+
+  /** Free-running tick position so synced LFOs animate even when stopped. */
+  private freeTicks() {
+    return Tone.now() * (this.transport.bpm.value / 60) * 96
+  }
+
+  private findFxMap(t: Y.Map<any>, fxId: string): Y.Map<any> | undefined {
+    const a = t.get('fx') as Y.Array<Y.Map<any>>
+    for (let i = 0; i < a.length; i++) if (a.get(i).get('id') === fxId) return a.get(i)
+    return undefined
+  }
+
+  private applyModulation() {
+    const newActive = new Map<string, { tid: string; dest: string; fxId: string; pkey: string }>()
+    const playing = this.transport.state === 'started'
+    const syncedPos = playing ? this.transport.ticks : this.freeTicks()
+    const audioTime = Tone.now()
+
+    for (const t of tracks.toArray()) {
+      const lfos = t.get('lfos') as Y.Array<Y.Map<any>> | undefined
+      if (!lfos || lfos.length === 0) continue
+      const tid = t.get('id') as string
+      const rec = this.built.get(tid)
+      if (!rec) continue
+
+      lfos.forEach(lfo => {
+        const pkey = lfo.get('pkey') as string
+        const dest = lfo.get('dest') as string
+        const raw = lfoShapeValue(lfo.get('shape') | 0,
+          lfo.get('sync')
+            ? syncedPos / (LFO_DIV_TICKS[lfo.get('rate') | 0] || 384) + (lfo.get('phase') ?? 0)
+            : audioTime * (lfo.get('hz') ?? 1) + (lfo.get('phase') ?? 0))
+        this.lfoVals.set(lfo.get('id'), raw)
+        if (!lfo.get('on') || !pkey || !dest) return
+
+        const depth = lfo.get('depth') ?? 0.5
+        const fxId = (lfo.get('fxId') as string) || ''
+        let spec, base: number | undefined, setter: ((v: number) => void) | undefined
+        if (dest === 'inst') {
+          spec = instSchema(t.get('inst').get('type')).params.find(s => s.key === pkey)
+          base = (t.get('inst').get('params') as Y.Map<number>).get(pkey)
+          setter = v => rec.inst.set(pkey, v)
+        } else {
+          const fxMap = this.findFxMap(t, fxId)
+          const bf = rec.fx.find(f => f.id === fxId)
+          if (!fxMap || !bf) return
+          spec = fxSchema(fxMap.get('type')).params.find(s => s.key === pkey)
+          base = (fxMap.get('params') as Y.Map<number>).get(pkey)
+          setter = v => bf.fx.set(pkey, v)
+        }
+        if (!spec || typeof base !== 'number' || !setter) return
+        const value = clamp(base + raw * depth * (spec.max - spec.min) * 0.5, spec.min, spec.max)
+        setter(value)
+        const akey = `${tid}|${dest}|${fxId}|${pkey}`
+        newActive.set(akey, { tid, dest, fxId, pkey })
+      })
+    }
+
+    // a param that was modulated last frame but isn't now → snap back to base
+    for (const [k, m] of this.activeMod) {
+      if (!newActive.has(k)) this.restoreParam(m)
+    }
+    this.activeMod = newActive
+  }
+
+  private restoreParam(m: { tid: string; dest: string; fxId: string; pkey: string }) {
+    const t = trackById(m.tid)
+    const rec = this.built.get(m.tid)
+    if (!t || !rec) return
+    if (m.dest === 'inst') {
+      const base = (t.get('inst').get('params') as Y.Map<number>).get(m.pkey)
+      if (typeof base === 'number') rec.inst.set(m.pkey, base)
+    } else {
+      const fxMap = this.findFxMap(t, m.fxId)
+      const bf = rec.fx.find(f => f.id === m.fxId)
+      if (fxMap && bf) {
+        const base = (fxMap.get('params') as Y.Map<number>).get(m.pkey)
+        if (typeof base === 'number') bf.fx.set(m.pkey, base)
+      }
+    }
+  }
+
+  /** Live LFO output [-1,1] for the UI indicator. */
+  lfoValue(lfoId: string) {
+    return this.lfoVals.get(lfoId) ?? 0
   }
 
   // ---------------- graph building ----------------
