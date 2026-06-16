@@ -86,18 +86,51 @@ class Engine {
     return Tone.getTransport()
   }
 
-  async ensureStarted() {
-    if (this.started) return
-    this.started = true
+  private startPromise: Promise<void> | null = null
+  private noOversample = false
+
+  ensureStarted(): Promise<void> {
+    if (this.started) return Promise.resolve()
+    // Memoize: the first-gesture pre-warm (main.tsx) and a Play click must not
+    // double-init. Crucially, a *failed* init must not wedge the engine — we
+    // clear the promise and leave `started` false so the next click retries,
+    // instead of latching `started = true` up front (the old silent-wedge bug).
+    if (!this.startPromise) {
+      this.startPromise = this.doStart().catch(e => {
+        console.error('audio init failed', e)
+        toast('Could not start audio — click Play to retry')
+        this.startPromise = null
+      })
+    }
+    return this.startPromise
+  }
+
+  private async doStart() {
     // 2x-oversampled engine: run the whole graph at 88.2kHz, the browser
     // resamples to the hardware rate on output. FM & nonlinear fx stay clean.
-    try {
-      const ctx = new AudioContext({ sampleRate: 88200, latencyHint: 'interactive' })
-      Tone.setContext(ctx)
-    } catch {
-      // fall back to default-rate context (older Safari)
+    // Custom sample rates are unsupported on older Safari → fall back cleanly.
+    if (!this.noOversample) {
+      try {
+        const ctx = new AudioContext({ sampleRate: 88200, latencyHint: 'interactive' })
+        Tone.setContext(ctx)
+      } catch {
+        this.noOversample = true
+      }
     }
     await Tone.start()
+    // Safari can leave the context 'suspended' even after start() — the Play
+    // button would then silently do nothing. Force-resume and verify; if a
+    // custom-rate context refuses to wake, drop oversampling and retry clean.
+    let raw = Tone.getContext().rawContext as AudioContext
+    if (raw.state !== 'running') { try { await raw.resume() } catch {} }
+    if (raw.state !== 'running' && !this.noOversample) {
+      this.noOversample = true
+      try { await raw.close() } catch {}
+      Tone.setContext(new AudioContext({ latencyHint: 'interactive' }))
+      await Tone.start()
+      raw = Tone.getContext().rawContext as AudioContext
+      if (raw.state !== 'running') { try { await raw.resume() } catch {} }
+    }
     this.sampleRate = Tone.getContext().sampleRate
 
     const t = this.transport
@@ -147,6 +180,7 @@ class Engine {
     arr.observeDeep(this.onArrDeep)
     meta.observe(this.onMeta)
     this.startModLoop()
+    this.started = true
     setUI({ audioReady: true })
     this.emit()
   }
