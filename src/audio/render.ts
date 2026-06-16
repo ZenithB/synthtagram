@@ -37,7 +37,8 @@ async function renderBuffer(
     transport.swing = project.meta.swing
     transport.swingSubdivision = '16n'
 
-    const master = new Tone.Channel({ volume: 0 })
+    // stereo-preserving master (Tone.Channel downmixes stereo input to mono)
+    const master = new Tone.Volume(0)
     const limiter = new Tone.Limiter(-1)
     master.chain(limiter, Tone.getDestination())
 
@@ -54,9 +55,16 @@ async function renderBuffer(
         if (f.type === 'reverb') reverbReady.push((fx.node as Tone.Reverb).ready.catch(() => {}))
         fxNodes.push(fx.node)
       })
-      const channel = new Tone.Channel({ volume: t.gain, pan: t.pan })
-      inst.out.chain(...fxNodes, channel)
-      channel.connect(master)
+      // raw StereoPanner preserves stereo (Tone.Panner downmixes stereo input)
+      const rawCtx = Tone.getContext().rawContext as unknown as BaseAudioContext
+      const panner = rawCtx.createStereoPanner()
+      panner.pan.value = t.pan
+      const vol = new Tone.Volume(t.gain)
+      const chainNodes: any[] = [inst.out, ...fxNodes]
+      for (let i = 0; i < chainNodes.length - 1; i++) Tone.connect(chainNodes[i], chainNodes[i + 1])
+      Tone.connect(chainNodes[chainNodes.length - 1], panner)
+      Tone.connect(panner, vol)
+      vol.connect(master)
 
       const schedule = (notes: Record<string, Note>, startTicks: number, lenTicks: number, loop: boolean) => {
         const events = Object.values(notes).map(n => ({ time: `${n.s}i`, ...n }))

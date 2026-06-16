@@ -6,20 +6,22 @@ import { Browser } from './Browser'
 import { SessionView } from './SessionView'
 import { ArrangementView } from './ArrangementView'
 import { PianoRoll } from './PianoRoll'
+import { AudioEditor } from './AudioEditor'
 import { DeviceRack } from './DeviceRack'
 import { Toasts, UndoPanel, CommandPalette, ShareDialog, HelpModal, ChatPanel, Onboard, StatusBar } from './panels'
 import { ContextMenuHost } from './widgets'
 import { setUI, ui, useUI } from '../state/store'
 import { engine } from '../audio/engine'
 import { undoMgr } from '../state/undo'
-import { chat, scenes, deleteClipAt, deleteArrClip, duplicateArrClip } from '../state/doc'
+import { chat, scenes, deleteClipAt, deleteArrClip, duplicateArrClip, getClipMap, isAudioClip } from '../state/doc'
 import { setPresence } from '../state/net'
-import { copyClipRef, pasteClipTo, duplicateClipToNextScene } from './actions'
+import { copyClipRef, pasteClipTo, duplicateClipToNextScene, importAudioFile } from './actions'
 
 export function App() {
   const view = useUI(s => s.view)
   const detailOpen = useUI(s => s.detailOpen)
   const detailTab = useUI(s => s.detailTab)
+  const selClip = useUI(s => s.selClip)
   const detailHeight = useUI(s => s.detailHeight)
   const uiZoom = useUI(s => s.uiZoom)
   const theme = useUI(s => s.theme)
@@ -85,6 +87,21 @@ export function App() {
     const h = () => { if (!ui.chatOpen) setUI({ chatUnread: ui.chatUnread + 1 }) }
     chat.observe(h)
     return () => chat.unobserve(h)
+  }, [])
+
+  // drag an audio file anywhere onto the app to import it as an audio clip
+  useEffect(() => {
+    const over = (e: DragEvent) => { if (e.dataTransfer?.types.includes('Files')) { e.preventDefault(); document.body.classList.add('drag-audio') } }
+    const leave = (e: DragEvent) => { if (e.relatedTarget === null) document.body.classList.remove('drag-audio') }
+    const drop = (e: DragEvent) => {
+      document.body.classList.remove('drag-audio')
+      const f = e.dataTransfer?.files?.[0]
+      if (f && f.type.startsWith('audio')) { e.preventDefault(); importAudioFile(f) }
+    }
+    window.addEventListener('dragover', over)
+    window.addEventListener('dragleave', leave)
+    window.addEventListener('drop', drop)
+    return () => { window.removeEventListener('dragover', over); window.removeEventListener('dragleave', leave); window.removeEventListener('drop', drop) }
   }, [])
 
   // global shortcuts
@@ -155,7 +172,7 @@ export function App() {
             <button className={`dtab ${detailTab === 'devices' ? 'on' : ''}`} onClick={() => setUI({ detailTab: 'devices' })} data-info="The selected track's instrument & effect chain">Devices</button>
           </div>
           <div className="detail-body">
-            {detailTab === 'clip' ? <PianoRoll /> : <DeviceRack />}
+            {detailTab === 'devices' ? <DeviceRack /> : (isAudioClip(getClipMap(selClip)) ? <AudioEditor /> : <PianoRoll />)}
           </div>
         </div>
       )}

@@ -271,7 +271,7 @@ function TrackHeader({ track }: { track: Y.Map<any> }) {
       data-info="Click to select & open devices. Right-click for track options."
     >
       <div className="track-title">
-        <span className="track-icon"><Icon name={kind === 'drum' ? 'drum' : 'wave'} size={12} /></span>
+        <span className="track-icon"><Icon name={kind === 'drum' ? 'drum' : kind === 'audio' ? 'sampler' : 'wave'} size={12} /></span>
         {renaming
           ? <InlineRename value={track.get('name')} onDone={v => { setRenaming(false); if (v) renameTrack(trackId, v) }} />
           : <span className="track-name" onDoubleClick={() => setRenaming(true)}>{track.get('name')}</span>}

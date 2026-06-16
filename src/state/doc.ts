@@ -45,20 +45,36 @@ export const id8 = () => nanoid(8)
 export const clipKey = (trackId: string, sceneId: string) => `${trackId}|${sceneId}`
 
 // ---------- JSON shapes (copy/paste, packs, import/export) ----------
-export type ClipJSON = { name: string; color: number; len: number; notes: Record<string, Note> }
-export type FxJSON = { type: string; on: boolean; params: Record<string, number> }
+export type AudioClipData = {
+  sampleId: string; sampleName: string
+  gainDb: number; pitch: number; rev: number; loop: number; fadeIn: number; fadeOut: number
+}
+export type ClipJSON = {
+  name: string; color: number; len: number; notes: Record<string, Note>
+  audio?: AudioClipData
+  env?: Record<string, { t: number; v: number }[]>
+  follow?: { on: boolean; bars: number; action: number; chance: number }
+}
+export type FxJSON = { id?: string; type: string; on: boolean; params: Record<string, number> }
+export type LfoJSON = { id?: string; on: number; shape: number; sync: number; rate: number; hz: number; depth: number; phase: number; dest: string; fxId: string; pkey: string }
+export type MacroJSON = { name: string; value: number; targets: { dest: string; fxId: string; pkey: string }[] }
+export type MidiFxJSON = { id?: string; type: string; on: boolean; params: Record<string, number> }
+export type ReturnJSON = { id?: string; name: string; fxType: string; params: Record<string, number>; gain: number }
 export type TrackJSON = {
   id?: string; name: string; color: number; kind: TrackKind
-  inst: { type: string; params: Record<string, number> }
+  inst: { type: string; params: Record<string, number>; sampleId?: string; sampleName?: string }
   fx: FxJSON[]
   gain: number; pan: number; mute: boolean; solo: boolean
+  sendA?: number; sendB?: number
+  lfos?: LfoJSON[]; macros?: MacroJSON[]; midifx?: MidiFxJSON[]
 }
 export type ProjectJSON = {
-  meta: { title: string; bpm: number; swing: number; root: number; scale: string; launchQ: number }
+  meta: { title: string; bpm: number; swing: number; root: number; scale: string; launchQ: number; masterGain?: number; loopOn?: boolean; loopStart?: number; loopEnd?: number }
   tracks: TrackJSON[]
   scenes: { id?: string; name: string }[]
   clips: Record<string, ClipJSON>
   arr: Record<string, ClipJSON & { trackId: string; start: number }>
+  returns?: ReturnJSON[]
 }
 
 // ---------- Y builders ----------
@@ -75,6 +91,11 @@ export function jsonToClipMap(json: ClipJSON, extra?: Record<string, any>) {
   m.set('color', json.color)
   m.set('len', json.len)
   m.set('notes', yNotes(json.notes))
+  if (json.audio) {
+    m.set('audio', true)
+    for (const [k, v] of Object.entries(json.audio)) m.set(k, v)
+  }
+  applyClipExtras(m, json)
   if (extra) for (const [k, v] of Object.entries(extra)) m.set(k, v)
   return m
 }
@@ -83,16 +104,60 @@ export function clipToJSON(m: Y.Map<any>): ClipJSON {
   const notes: Record<string, Note> = {}
   const nm = m.get('notes') as Y.Map<Note>
   if (nm) nm.forEach((n, k) => { notes[k] = { ...n } })
-  return { name: m.get('name') ?? 'Clip', color: m.get('color') ?? 0, len: m.get('len') ?? BAR, notes }
+  const out: ClipJSON = { name: m.get('name') ?? 'Clip', color: m.get('color') ?? 0, len: m.get('len') ?? BAR, notes }
+  if (m.get('audio')) {
+    out.audio = {
+      sampleId: m.get('sampleId') ?? '', sampleName: m.get('sampleName') ?? 'Audio',
+      gainDb: m.get('gainDb') ?? 0, pitch: m.get('pitch') ?? 0, rev: m.get('rev') ?? 0,
+      loop: m.get('loop') ?? 1, fadeIn: m.get('fadeIn') ?? 0, fadeOut: m.get('fadeOut') ?? 0,
+    }
+  }
+  const env = m.get('env') as Y.Map<any> | undefined
+  if (env && env.size) {
+    out.env = {}
+    env.forEach((arr2, k) => { out.env![k] = (arr2 as Y.Array<any>).toArray().map(p => ({ t: p.t, v: p.v })) })
+  }
+  const f = m.get('follow') as Y.Map<any> | undefined
+  if (f) out.follow = { on: !!f.get('on'), bars: f.get('bars') ?? 1, action: f.get('action') ?? 0, chance: f.get('chance') ?? 1 }
+  return out
+}
+
+export function isAudioClip(m: Y.Map<any> | null | undefined): boolean {
+  return !!m?.get('audio')
 }
 
 function yFx(fx: FxJSON) {
   const m = new Y.Map<any>()
-  m.set('id', id8())
+  m.set('id', fx.id ?? id8())
   m.set('type', fx.type)
   m.set('on', fx.on)
   const pm = new Y.Map<number>()
   for (const [k, v] of Object.entries(fx.params)) pm.set(k, v)
+  m.set('params', pm)
+  return m
+}
+
+function yLfo(l: LfoJSON) {
+  const m = new Y.Map<any>()
+  m.set('id', l.id ?? id8())
+  m.set('on', l.on); m.set('shape', l.shape); m.set('sync', l.sync); m.set('rate', l.rate)
+  m.set('hz', l.hz); m.set('depth', l.depth); m.set('phase', l.phase)
+  m.set('dest', l.dest); m.set('fxId', l.fxId); m.set('pkey', l.pkey)
+  return m
+}
+function yMacro(mc: MacroJSON) {
+  const m = new Y.Map<any>()
+  m.set('name', mc.name); m.set('value', mc.value)
+  const targets = new Y.Array<Y.Map<any>>()
+  targets.push(mc.targets.map(tg => { const tm = new Y.Map<any>(); tm.set('dest', tg.dest); tm.set('fxId', tg.fxId); tm.set('pkey', tg.pkey); return tm }))
+  m.set('targets', targets)
+  return m
+}
+function yMidiFx(d: MidiFxJSON) {
+  const m = new Y.Map<any>()
+  m.set('id', d.id ?? id8()); m.set('type', d.type); m.set('on', d.on)
+  const pm = new Y.Map<number>()
+  for (const [k, v] of Object.entries(d.params)) pm.set(k, v)
   m.set('params', pm)
   return m
 }
@@ -108,18 +173,36 @@ function yTrack(t: TrackJSON) {
   const pm = new Y.Map<number>()
   for (const [k, v] of Object.entries(t.inst.params)) pm.set(k, v)
   inst.set('params', pm)
+  if (t.inst.sampleId) { inst.set('sampleId', t.inst.sampleId); inst.set('sampleName', t.inst.sampleName ?? '') }
   m.set('inst', inst)
   const fxArr = new Y.Array<Y.Map<any>>()
   fxArr.push(t.fx.map(yFx))
   m.set('fx', fxArr)
-  m.set('lfos', new Y.Array<Y.Map<any>>())
+  const lfoArr = new Y.Array<Y.Map<any>>()
+  if (t.lfos?.length) lfoArr.push(t.lfos.map(yLfo))
+  m.set('lfos', lfoArr)
+  if (t.macros?.length) { const ma = new Y.Array<Y.Map<any>>(); ma.push(t.macros.map(yMacro)); m.set('macros', ma) }
+  if (t.midifx?.length) { const mx = new Y.Array<Y.Map<any>>(); mx.push(t.midifx.map(yMidiFx)); m.set('midifx', mx) }
   m.set('gain', t.gain)
   m.set('pan', t.pan)
   m.set('mute', t.mute)
   m.set('solo', t.solo)
-  m.set('sendA', 0)
-  m.set('sendB', 0)
+  m.set('sendA', t.sendA ?? 0)
+  m.set('sendB', t.sendB ?? 0)
   return m
+}
+
+function applyClipExtras(m: Y.Map<any>, json: ClipJSON) {
+  if (json.env) {
+    const env = new Y.Map<any>()
+    for (const [k, pts] of Object.entries(json.env)) { const a = new Y.Array<any>(); a.push(pts.map(p => ({ ...p }))); env.set(k, a) }
+    m.set('env', env)
+  }
+  if (json.follow) {
+    const f = new Y.Map<any>()
+    f.set('on', json.follow.on); f.set('bars', json.follow.bars); f.set('action', json.follow.action); f.set('chance', json.follow.chance)
+    m.set('follow', f)
+  }
 }
 
 // ---------- lookups ----------
@@ -595,6 +678,28 @@ export function setSamplerSample(trackId: string, sampleId: string, name: string
   })
 }
 
+// ---------- audio tracks & clips ----------
+export function addAudioTrack(name: string, color: number): string {
+  return addTrack({
+    name, color, kind: 'audio',
+    inst: { type: 'audiobus', params: {} },
+    fx: [], gain: 0, pan: 0, mute: false, solo: false,
+  })
+}
+
+export function createAudioClip(trackId: string, sceneId: string, sampleId: string, sampleName: string, durTicks: number, color: number): ClipRef {
+  const m = jsonToClipMap({
+    name: sampleName, color, len: durTicks, notes: {},
+    audio: { sampleId, sampleName, gainDb: 0, pitch: 0, rev: 0, loop: 1, fadeIn: 0, fadeOut: 0 },
+  })
+  mutate('Add audio clip', () => clips.set(clipKey(trackId, sceneId), m))
+  return { kind: 'session', trackId, sceneId }
+}
+
+export function setAudioField(ref: ClipRef, key: string, val: number, label = 'Edit audio clip') {
+  mutate(label, () => getClipMap(ref)?.set(key, val))
+}
+
 // ---------- scenes ----------
 export function addScene(afterIndex?: number): string {
   const m = new Y.Map<any>()
@@ -805,19 +910,43 @@ export function exportProject(): ProjectJSON {
       root: meta.get('root') ?? 9,
       scale: meta.get('scale') ?? 'minor',
       launchQ: meta.get('launchQ') ?? 1,
+      masterGain: meta.get('masterGain') ?? 0,
+      loopOn: !!meta.get('loopOn'), loopStart: meta.get('loopStart') ?? 0, loopEnd: meta.get('loopEnd') ?? BAR * 4,
     },
-    tracks: tracks.toArray().map(t => ({
-      id: t.get('id'), name: t.get('name'), color: t.get('color'), kind: t.get('kind'),
-      inst: { type: t.get('inst').get('type'), params: Object.fromEntries((t.get('inst').get('params') as Y.Map<number>).entries()) },
-      fx: (t.get('fx') as Y.Array<Y.Map<any>>).toArray().map(f => ({
-        type: f.get('type'), on: f.get('on'),
-        params: Object.fromEntries((f.get('params') as Y.Map<number>).entries()),
-      })),
-      gain: t.get('gain'), pan: t.get('pan'), mute: t.get('mute'), solo: t.get('solo'),
-    })),
+    tracks: tracks.toArray().map(t => {
+      const inst = t.get('inst') as Y.Map<any>
+      const instJson: TrackJSON['inst'] = { type: inst.get('type'), params: Object.fromEntries((inst.get('params') as Y.Map<number>).entries()) }
+      if (inst.get('sampleId')) { instJson.sampleId = inst.get('sampleId'); instJson.sampleName = inst.get('sampleName') ?? '' }
+      const lfos = (t.get('lfos') as Y.Array<Y.Map<any>> | undefined)?.toArray().map(l => ({
+        id: l.get('id'), on: l.get('on'), shape: l.get('shape'), sync: l.get('sync'), rate: l.get('rate'),
+        hz: l.get('hz'), depth: l.get('depth'), phase: l.get('phase'), dest: l.get('dest'), fxId: l.get('fxId'), pkey: l.get('pkey'),
+      })) ?? []
+      const macros = (t.get('macros') as Y.Array<Y.Map<any>> | undefined)?.toArray().map(mc => ({
+        name: mc.get('name'), value: mc.get('value'),
+        targets: (mc.get('targets') as Y.Array<Y.Map<any>>).toArray().map(tg => ({ dest: tg.get('dest'), fxId: tg.get('fxId'), pkey: tg.get('pkey') })),
+      })) ?? []
+      const midifx = (t.get('midifx') as Y.Array<Y.Map<any>> | undefined)?.toArray().map(d => ({
+        id: d.get('id'), type: d.get('type'), on: d.get('on'), params: Object.fromEntries((d.get('params') as Y.Map<number>).entries()),
+      })) ?? []
+      return {
+        id: t.get('id'), name: t.get('name'), color: t.get('color'), kind: t.get('kind'),
+        inst: instJson,
+        fx: (t.get('fx') as Y.Array<Y.Map<any>>).toArray().map(f => ({
+          id: f.get('id'), type: f.get('type'), on: f.get('on'),
+          params: Object.fromEntries((f.get('params') as Y.Map<number>).entries()),
+        })),
+        gain: t.get('gain'), pan: t.get('pan'), mute: t.get('mute'), solo: t.get('solo'),
+        sendA: t.get('sendA') ?? 0, sendB: t.get('sendB') ?? 0,
+        lfos, macros, midifx,
+      }
+    }),
     scenes: scenes.toArray().map(s => ({ id: s.get('id'), name: s.get('name') })),
     clips: clipsJson,
     arr: arrJson,
+    returns: returns.toArray().map(r => ({
+      id: r.get('id'), name: r.get('name'), fxType: r.get('fxType'),
+      params: Object.fromEntries((r.get('params') as Y.Map<number>).entries()), gain: r.get('gain') ?? 0,
+    })),
   }
 }
 
@@ -832,9 +961,19 @@ export function loadProject(json: ProjectJSON, label = 'Load project') {
     const ak: string[] = []
     arr.forEach((_v, k) => ak.push(k))
     ak.forEach(k => arr.delete(k))
+    if (returns.length) returns.delete(0, returns.length)
     // meta
     for (const [k, v] of Object.entries(json.meta)) meta.set(k, v)
     meta.set('inited', true)
+    // return buses (preserve ids so send routing stays valid)
+    if (json.returns?.length) {
+      returns.push(json.returns.map(r => {
+        const m = new Y.Map<any>()
+        m.set('id', r.id ?? id8()); m.set('name', r.name); m.set('fxType', r.fxType); m.set('gain', r.gain)
+        const pm = new Y.Map<number>(); for (const [k, v] of Object.entries(r.params)) pm.set(k, v); m.set('params', pm)
+        return m
+      }))
+    }
     // id remapping (packs may use friendly ids)
     const tidMap = new Map<string, string>()
     const sidMap = new Map<string, string>()

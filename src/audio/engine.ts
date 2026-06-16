@@ -11,6 +11,7 @@ import { BAR, STEP16, Note, clamp } from '../types'
 import {
   meta, tracks, clips, arr, clipKey, notesOf, addNote, updateNotes,
   createClip, trackById, returns, ensureReturns, midifxOf, envKeys, envPoints, followOf, scenes, sceneIndex,
+  isAudioClip,
 } from '../state/doc'
 import { makeInstrument, makeEffect, Inst, Fx } from './devices'
 import { instSchema, fxSchema, lfoShapeValue, LFO_DIV_TICKS, mixSpec, midiFxSchema, ARP_DIV_TICKS } from './schema'
@@ -26,11 +27,13 @@ type BuiltTrack = {
   kind: string
   inst: Inst
   fx: BuiltFx[]
-  channel: Tone.Channel
+  panner: StereoPannerNode
+  vol: Tone.Volume
   meter: Tone.Meter
   sendA: Tone.Gain
   sendB: Tone.Gain
   part: Tone.Part | null
+  player: Tone.Player | null
   partKey: string | null
   partStartTicks: number
   partLoopTicks: number
@@ -39,15 +42,15 @@ type BuiltTrack = {
   unobserve: (() => void) | null
 }
 
-type BuiltReturn = { id: string; fx: Fx; channel: Tone.Channel }
+type BuiltReturn = { id: string; fx: Fx; channel: Tone.Volume }
 
 class Engine {
   started = false
   mode: 'session' | 'arr' = 'session'
   built = new Map<string, BuiltTrack>()
-  master!: Tone.Channel
+  master!: Tone.Volume
   masterMeter!: Tone.Meter
-  arrParts: Tone.Part[] = []
+  arrParts: Array<Tone.Part | Tone.Player> = []
   arrSeekTicks = 0
   sampleRate = 0
   private metro!: Tone.Synth
@@ -103,7 +106,9 @@ class Engine {
     t.swing = meta.get('swing') ?? 0
     t.swingSubdivision = '16n'
 
-    this.master = new Tone.Channel({ volume: meta.get('masterGain') ?? 0 })
+    // Tone.Channel downmixes stereo input to mono (its PanVol has a 1-channel
+    // input); use a plain stereo-preserving Volume for the master & returns.
+    this.master = new Tone.Volume(meta.get('masterGain') ?? 0)
     const limiter = new Tone.Limiter(-1)
     this.masterMeter = new Tone.Meter({ smoothing: 0.85 })
     this.masterFFT = new Tone.Analyser('fft', 1024)
@@ -182,7 +187,7 @@ class Engine {
       const spec = mixSpec(pkey)
       const base = t.get(pkey)
       if (!spec || typeof base !== 'number') return null
-      const setter = (v: number) => { if (pkey === 'gain') rec.channel.volume.rampTo(v, 0.02); else rec.channel.pan.rampTo(v, 0.02) }
+      const setter = (v: number) => { if (pkey === 'gain') rec.vol.volume.rampTo(v, 0.02); else rec.panner.pan.setTargetAtTime(v, Tone.now(), 0.02) }
       return { spec, base, setter }
     }
     const fxMap = this.findFxMap(t, fxId)
@@ -327,26 +332,43 @@ class Engine {
     ;(t.get('fx') as Y.Array<Y.Map<any>>).forEach(f => {
       if (f.get('on')) fx.push({ id: f.get('id'), type: f.get('type'), fx: makeEffect(f.get('type'), (f.get('params') as Y.Map<number>).toJSON()) })
     })
-    const channel = new Tone.Channel({ volume: t.get('gain') ?? 0, pan: t.get('pan') ?? 0, mute: !!t.get('mute') })
-    channel.solo = !!t.get('solo')
+    // Stereo-preserving strip: pan → volume. We use a RAW StereoPannerNode
+    // because Tone.Panner (like Tone.Channel) downmixes stereo input to mono —
+    // which would flatten stereo samples and stereo effects.
+    const ctx = Tone.getContext().rawContext as AudioContext
+    const panner = ctx.createStereoPanner()
+    panner.pan.value = t.get('pan') ?? 0
+    const vol = new Tone.Volume(t.get('gain') ?? 0)
     const meter = new Tone.Meter({ smoothing: 0.8 })
-    const nodes = [...fx.map(f => f.fx.node), channel]
-    inst.out.chain(...(nodes as [Tone.ToneAudioNode]))
-    channel.connect(this.master)
-    channel.connect(meter)
+    const chainNodes: any[] = [inst.out, ...fx.map(f => f.fx.node)]
+    for (let i = 0; i < chainNodes.length - 1; i++) Tone.connect(chainNodes[i], chainNodes[i + 1])
+    Tone.connect(chainNodes[chainNodes.length - 1], panner)
+    Tone.connect(panner, vol)
+    vol.connect(this.master)
+    vol.connect(meter)
     // post-fader sends feed the return buses
     const sendA = new Tone.Gain(t.get('sendA') ?? 0)
     const sendB = new Tone.Gain(t.get('sendB') ?? 0)
-    channel.connect(sendA)
-    channel.connect(sendB)
+    vol.connect(sendA)
+    vol.connect(sendB)
     const rec: BuiltTrack = {
-      id: tid, kind: t.get('kind'), inst, fx, channel, meter, sendA, sendB,
-      part: null, partKey: null, partStartTicks: 0, partLoopTicks: BAR,
+      id: tid, kind: t.get('kind'), inst, fx, panner, vol, meter, sendA, sendB,
+      part: null, player: null, partKey: null, partStartTicks: 0, partLoopTicks: BAR,
       queuedKey: null, queuedPart: null, unobserve: null,
     }
     this.built.set(tid, rec)
     this.wireSends(rec)
+    this.applyMuteSolo()
     return rec
+  }
+
+  /** Mute = own mute OR (some track soloed AND this one isn't). Engine-coordinated. */
+  private applyMuteSolo() {
+    const soloAny = tracks.toArray().some(t => t.get('solo'))
+    for (const t of tracks.toArray()) {
+      const rec = this.built.get(t.get('id'))
+      if (rec) rec.vol.mute = !!t.get('mute') || (soloAny && !t.get('solo'))
+    }
   }
 
   private wireSends(rec: BuiltTrack) {
@@ -362,7 +384,7 @@ class Engine {
     this.builtReturns = []
     returns.forEach(r => {
       const fx = makeEffect(r.get('fxType'), (r.get('params') as Y.Map<number>).toJSON())
-      const channel = new Tone.Channel({ volume: r.get('gain') ?? 0 })
+      const channel = new Tone.Volume(r.get('gain') ?? 0)
       fx.node.connect(channel)
       channel.connect(this.master)
       this.builtReturns.push({ id: r.get('id'), fx, channel })
@@ -400,7 +422,8 @@ class Engine {
     try {
       rec.inst.dispose()
       rec.fx.forEach(f => f.fx.dispose())
-      rec.channel.dispose()
+      rec.panner.disconnect()
+      rec.vol.dispose()
       rec.meter.dispose()
       rec.sendA.dispose()
       rec.sendB.dispose()
@@ -458,10 +481,10 @@ class Engine {
       if (!rec) { structural.add(tid); continue }
       if (path.length === 1) {
         ev.changes.keys.forEach((_c, key) => {
-          if (key === 'gain') rec.channel.volume.rampTo(t.get('gain'), 0.05)
-          else if (key === 'pan') rec.channel.pan.rampTo(t.get('pan'), 0.05)
-          else if (key === 'mute') rec.channel.mute = !!t.get('mute')
-          else if (key === 'solo') rec.channel.solo = !!t.get('solo')
+          if (key === 'gain') rec.vol.volume.rampTo(t.get('gain'), 0.05)
+          else if (key === 'pan') rec.panner.pan.setTargetAtTime(t.get('pan'), Tone.now(), 0.03)
+          else if (key === 'mute') this.applyMuteSolo()
+          else if (key === 'solo') this.applyMuteSolo()
           else if (key === 'sendA') rec.sendA.gain.rampTo(t.get('sendA') ?? 0, 0.03)
           else if (key === 'sendB') rec.sendB.gain.rampTo(t.get('sendB') ?? 0, 0.03)
           else if (key === 'inst' || key === 'fx') structural.add(tid)
@@ -673,6 +696,10 @@ class Engine {
     if (rec.part) {
       try { rec.part.stop(); rec.part.dispose() } catch { /* ok */ }
     }
+    if (rec.player) {
+      try { rec.player.stop(); rec.player.unsync(); rec.player.dispose() } catch { /* ok */ }
+      rec.player = null
+    }
     this.cancelQueued(rec)
     this.clearFollow(rec.id)
     rec.unobserve?.()
@@ -680,6 +707,58 @@ class Engine {
     rec.part = null
     rec.partKey = null
     rec.queuedKey = null
+  }
+
+  // ---------------- audio-clip playback ----------------
+  private makePlayer(rec: BuiltTrack, clipMap: Y.Map<any>): Tone.Player {
+    const buf = getSampleBuffer(clipMap.get('sampleId') || '')
+    const player = new Tone.Player(buf as any)
+    player.loop = !!clipMap.get('loop')
+    player.playbackRate = Math.pow(2, (clipMap.get('pitch') ?? 0) / 12)
+    player.reverse = !!clipMap.get('rev')
+    try { player.fadeIn = Math.max(0, Tone.Ticks(clipMap.get('fadeIn') ?? 0).toSeconds()) } catch { /* ok */ }
+    try { player.fadeOut = Math.max(0, Tone.Ticks(clipMap.get('fadeOut') ?? 0).toSeconds()) } catch { /* ok */ }
+    player.volume.value = clipMap.get('gainDb') ?? 0
+    player.connect(rec.inst.out)
+    return player
+  }
+
+  private observeAudioClip(rec: BuiltTrack, key: string, clipMap: Y.Map<any>) {
+    const h = () => {
+      if (rec.partKey !== key || !rec.player) return
+      const p = rec.player
+      try {
+        p.volume.rampTo(clipMap.get('gainDb') ?? 0, 0.03)
+        p.playbackRate = Math.pow(2, (clipMap.get('pitch') ?? 0) / 12)
+        p.loop = !!clipMap.get('loop')
+      } catch { /* ok */ }
+    }
+    clipMap.observeDeep(h)
+    rec.unobserve = () => clipMap.unobserveDeep(h)
+  }
+
+  private launchAudioClip(trackId: string, sceneId: string, key: string) {
+    const rec = this.built.get(trackId)
+    const clipMap = clips.get(key) as Y.Map<any> | undefined
+    if (!rec || !clipMap) return
+    const started = this.transport.state === 'started'
+    const atTicks = started ? this.nextBoundaryTicks() : 0
+    const atT = `${atTicks}i`
+    this.cancelQueued(rec)
+    if (rec.part) { try { rec.part.stop(); rec.part.dispose() } catch { /* ok */ } rec.part = null }
+    rec.unobserve?.(); rec.unobserve = null
+    const oldPlayer = rec.player
+    if (!started) { this.transport.ticks = 0 as any; this.transport.start('+0.05') }
+    const player = this.makePlayer(rec, clipMap)
+    try { player.sync().start(atT) } catch { try { player.start() } catch { /* ok */ } }
+    if (oldPlayer) { try { oldPlayer.stop(atT) } catch { /* ok */ } setTimeout(() => { try { oldPlayer.unsync(); oldPlayer.dispose() } catch { /* ok */ } }, 900) }
+    rec.player = player
+    rec.partKey = key
+    rec.partStartTicks = atTicks
+    rec.partLoopTicks = clipMap.get('len') ?? BAR
+    this.observeAudioClip(rec, key, clipMap)
+    this.armFollow(trackId, sceneId, atTicks)
+    this.emit()
   }
 
   private clearFollow(trackId: string) {
@@ -779,6 +858,7 @@ class Engine {
     const rec = this.built.get(trackId)
     const clipMap = clips.get(key) as Y.Map<any> | undefined
     if (!rec || !clipMap) return
+    if (isAudioClip(clipMap)) { this.launchAudioClip(trackId, sceneId, key); return }
     if (rec.partKey === key && !rec.queuedKey && !rec.queuedPart) return
 
     if (this.transport.state !== 'started') {
@@ -820,9 +900,21 @@ class Engine {
 
   async stopClip(trackId: string) {
     const rec = this.built.get(trackId)
-    if (!rec || (!rec.part && !rec.queuedKey && !rec.queuedPart)) return
+    if (!rec || (!rec.part && !rec.player && !rec.queuedKey && !rec.queuedPart)) return
     if (this.transport.state !== 'started') {
       this.stopTrackNow(rec)
+      this.emit()
+      return
+    }
+    // audio clip: stop the player at the next boundary
+    if (rec.player && !rec.part) {
+      const atT = `${this.nextBoundaryTicks()}i`
+      const p = rec.player
+      rec.player = null; rec.partKey = null
+      rec.unobserve?.(); rec.unobserve = null
+      this.clearFollow(trackId)
+      try { p.stop(atT) } catch { try { p.stop() } catch { /* ok */ } }
+      setTimeout(() => { try { p.unsync(); p.dispose() } catch { /* ok */ } }, 900)
       this.emit()
       return
     }
@@ -868,9 +960,16 @@ class Engine {
     arr.forEach(clipMap => {
       const rec = this.built.get(clipMap.get('trackId'))
       if (!rec) return
-      const part = this.makePart(rec, clipMap)
       const start = clipMap.get('start') ?? 0
       const len = clipMap.get('len') ?? BAR
+      if (isAudioClip(clipMap)) {
+        if (!getSampleBuffer(clipMap.get('sampleId') || '')) return
+        const player = this.makePlayer(rec, clipMap)
+        try { player.sync().start(`${start}i`).stop(`${start + len}i`) } catch { /* ok */ }
+        this.arrParts.push(player)
+        return
+      }
+      const part = this.makePart(rec, clipMap)
       part.start(`${start}i`)
       part.stop(`${start + len}i`)
       this.arrParts.push(part)

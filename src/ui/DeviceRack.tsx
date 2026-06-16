@@ -138,27 +138,30 @@ function InstrumentPanel({ trackId, track }: { trackId: string; track: Y.Map<any
   return (
     <div className="device inst-device">
       <div className="device-head">
-        <span className="device-title"><Icon name={schema.icon} size={13} /> {schema.label}</span>
-        {kind !== 'drum' && (
+        <span className="device-title"><Icon name={schema.icon} size={13} /> {kind === 'audio' ? 'Audio Track' : schema.label}</span>
+        {kind === 'synth' && (
           <select
             className="device-select"
             value={type}
             data-info="Swap the instrument module (resets its knobs)"
             onChange={e => setInstrument(trackId, e.target.value, defaultsFor(instSchema(e.target.value).params), `Instrument: ${e.target.value}`)}
           >
-            {INSTRUMENTS.filter(i => i.type !== 'drum').map(i => <option key={i.type} value={i.type}>{i.label}</option>)}
+            {INSTRUMENTS.filter(i => i.type !== 'drum' && i.type !== 'audiobus').map(i => <option key={i.type} value={i.type}>{i.label}</option>)}
           </select>
         )}
-        <select
-          className="device-select"
-          value=""
-          data-info={kind === 'drum' ? 'Load a drum kit preset' : 'Load an instrument preset'}
-          onChange={e => { if (e.target.value) onPreset(e.target.value) }}
-        >
-          <option value="">{kind === 'drum' ? 'Kits…' : 'Presets…'}</option>
-          {(kind === 'drum' ? kitNames : presetMatches).map(n => <option key={n} value={n}>{n}</option>)}
-        </select>
-        {kind !== 'drum' && type !== 'sampler' && (
+        {kind !== 'audio' && (
+          <select
+            className="device-select"
+            value=""
+            data-info={kind === 'drum' ? 'Load a drum kit preset' : 'Load an instrument preset'}
+            onChange={e => { if (e.target.value) onPreset(e.target.value) }}
+          >
+            <option value="">{kind === 'drum' ? 'Kits…' : 'Presets…'}</option>
+            {(kind === 'drum' ? kitNames : presetMatches).map(n => <option key={n} value={n}>{n}</option>)}
+          </select>
+        )}
+        {kind === 'audio' && <span className="device-audio-hint">audio clips · stereo · fx + sends apply</span>}
+        {kind === 'synth' && type !== 'sampler' && (
           <button className="icon-btn" data-info="Save these settings as your own preset"
             onClick={() => {
               const name = prompt('Save preset as…', `My ${schema.label}`)

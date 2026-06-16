@@ -29,6 +29,8 @@ No install, no account, no server. Your project autosaves locally; sharing creat
 - **Drum step sequencer** — a 16-step × 8-pad grid for drum clips, the fastest way to build a beat (toggle to the piano roll anytime).
 - **Master analyzers** — a spectrum analyzer, oscilloscope and tuner on the master output (click to cycle).
 - **Personal library** — save your own instrument presets and favorite any sound; they live in *My Sounds* and *Favorites* in the browser.
+- **Audio clips** — import audio files (drag-and-drop or the browser button), **mono or stereo**, as clips on audio tracks. Launch/loop them in the grid, place them on the timeline, and manipulate: gain, repitch, reverse, loop, fade in/out, with a waveform view. They run through the track's full effect chain, sends and mixer.
+- **Fully stereo signal path** — panning, stereo effects (Ping Pong, Widener, Auto Pan), and stereo samples are preserved end-to-end through tracks, returns, the master and the WAV export.
 - **Sound packs** — a searchable browser with **~50 instrument presets** (supersaw anthems to gamelan bells), **12 drum kits** (808 Boom, Trap 808 Long, Techno Bunker, Garage 2-Step, Ambient Glass…), **40 MIDI loops** across drums/bass/chords/melody/arps (click to audition, drag onto the grid), plus a full demo song.
 - **Chord progression generator** — 16 classic progressions (Axis pop, Doo-Wop, Royal Road, 12-bar blues, Andalusian, jazz ii–V–I, neo-soul vamps…) rendered **into your project's key** on drop, with roman-numeral labels and one-click audition.
 - **Export** — render your arrangement, loop region, or a scene to WAV entirely in the browser; export per-track **stems**; save/import project files.

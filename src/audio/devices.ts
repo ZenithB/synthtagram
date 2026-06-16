@@ -304,6 +304,13 @@ function makeSampler(p: Record<string, number>, buffer?: AudioBuffer): Inst {
   }
 }
 
+/** Audio tracks have no synth — just a stereo passthrough bus that audio-clip
+ *  players connect into, so the signal runs through the track's fx + mixer. */
+function makeAudioBus(): Inst {
+  const bus = new Tone.Gain(1)
+  return { out: bus, set: () => {}, noteOn: () => {}, noteOff: () => {}, trigger: () => {}, dispose: () => bus.dispose() }
+}
+
 export function makeInstrument(type: string, params: Record<string, number>, buffer?: AudioBuffer): Inst {
   switch (type) {
     case 'fm': return makeFm(params)
@@ -312,6 +319,7 @@ export function makeInstrument(type: string, params: Record<string, number>, buf
     case 'keys': return makeKeys(params)
     case 'duo': return makeDuo(params)
     case 'sampler': return makeSampler(params, buffer)
+    case 'audiobus': return makeAudioBus()
     case 'drum': return makeDrum(params)
     default: return makePoly(params)
   }

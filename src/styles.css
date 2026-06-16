@@ -523,3 +523,18 @@ button { cursor: pointer; background: none; border: none; }
 .step-cell.bar { border-left: 2px solid var(--gridBar); }
 .step-cell:hover { border-color: var(--dim); }
 .step-cell.on { background: var(--accent); border-color: var(--accent); }
+
+/* ---------------- audio clips ---------------- */
+.audio-editor { height: 100%; display: flex; flex-direction: column; }
+.audio-body { flex: 1; min-height: 0; display: flex; gap: 10px; padding: 10px; }
+.wave-box { flex: 1; min-width: 0; background: var(--bg0); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.wave-box canvas { display: block; width: 100%; height: 100%; }
+.audio-knobs { display: flex; gap: 6px; align-items: flex-start; flex-wrap: wrap; max-width: 200px; }
+.slot-audio-ic { display: inline-flex; color: var(--accent2); margin-right: 3px; flex-shrink: 0; }
+body.drag-audio::after {
+  content: 'Drop audio to import'; position: fixed; inset: 0; z-index: 500;
+  display: flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--accent2) 16%, rgba(0,0,0,0.5));
+  border: 3px dashed var(--accent2); color: var(--text); font-size: 20px; font-weight: 700;
+  pointer-events: none;
+}

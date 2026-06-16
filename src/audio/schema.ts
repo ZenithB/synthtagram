@@ -117,6 +117,7 @@ export const INSTRUMENTS: InstrumentSchema[] = [
     ],
   },
   { type: 'drum', label: 'Drum Kit', icon: 'drum', params: drumParams() },
+  { type: 'audiobus', label: 'Audio', icon: 'sampler', params: [] },
 ]
 
 // ----------------- effects -----------------

@@ -5,7 +5,7 @@
 import React, { useState } from 'react'
 import { INST_PRESETS, DRUM_KITS, MIDI_LOOPS, PROGRESSIONS, progressionPitches } from '../packs'
 import { engine } from '../audio/engine'
-import { applyPreset, applyDrumKit, loadLoop, loadProgression, loadDemo, newProject, importProjectFile } from './actions'
+import { applyPreset, applyDrumKit, loadLoop, loadProgression, loadDemo, newProject, importProjectFile, pickAudioFile } from './actions'
 import { exportProjectFile } from '../audio/render'
 import { meta } from '../state/doc'
 import { useY } from './hooks'
@@ -178,6 +178,11 @@ export function Browser() {
               </div>
             )
           })}
+        </Section>
+
+        <Section title="Audio">
+          <button className="bbtn" onClick={pickAudioFile} data-info="Import an audio file (mono or stereo) as an audio clip on a new track"><Icon name="sampler" size={13} />Import audio clip…</button>
+          <div className="bcat" style={{ paddingBottom: 6 }}>Or drag an audio file onto the app</div>
         </Section>
 
         <Section title="Project">

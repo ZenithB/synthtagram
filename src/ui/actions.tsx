@@ -1,20 +1,54 @@
 // Cross-cutting UI actions shared by SessionView, Browser, the command
 // palette and keyboard shortcuts.
 
-import { ClipRef, CLIP_COLORS } from '../types'
+import { ClipRef, CLIP_COLORS, BAR } from '../types'
 import {
   addTrack, addScene, clipKey, clips, duplicateClipTo, getClipMap, clipToJSON,
   jsonToClipMap, loadProject, mutate, scenes, setInstrument, trackById, ClipJSON, TrackJSON,
+  addAudioTrack, createAudioClip,
 } from '../state/doc'
 import { setUI, toast, ui } from '../state/store'
 import { setPresence } from '../state/net'
 import { engine } from '../audio/engine'
 import { meta } from '../state/doc'
+import { importSampleFile, getSampleBuffer } from '../audio/samples'
 import { DEFAULT_PROJECT, demoProject, DRUM_KITS, InstPreset, MidiLoop, Progression, progressionClip, clipInKey } from '../packs'
 
 export function selectTrack(trackId: string | null) {
   setUI({ selTrackId: trackId })
   setPresence({ sel: trackId ? { trackId } : null })
+}
+
+// ---------------- audio import ----------------
+let audioColor = 5
+export async function importAudioFile(file: File, targetTrackId?: string, targetSceneId?: string) {
+  try {
+    const { id, name } = await importSampleFile(file)
+    const buf = getSampleBuffer(id)
+    const bpm = meta.get('bpm') ?? 120
+    const durTicks = buf ? Math.max(BAR / 4, Math.round(buf.duration * (bpm / 60) * 96)) : BAR * 2
+    const color = (audioColor = (audioColor + 4) % CLIP_COLORS.length)
+    let trackId: string = (targetTrackId && trackById(targetTrackId)?.get('kind') === 'audio') ? targetTrackId : addAudioTrack(name, color)
+    let sceneId: string | undefined = targetSceneId
+    if (!sceneId) {
+      for (let i = 0; i < scenes.length; i++) { const sid = scenes.get(i).get('id'); if (!clips.get(clipKey(trackId, sid))) { sceneId = sid; break } }
+      sceneId = sceneId ?? (scenes.length ? scenes.get(0).get('id') : addScene())
+    }
+    const ref = createAudioClip(trackId, sceneId as string, id, name, durTicks, color)
+    selectClip(ref, true)
+    toast(`Imported "${name}"`)
+  } catch (e) {
+    console.error(e)
+    toast('Could not import that audio file')
+  }
+}
+
+export function pickAudioFile() {
+  const input = document.createElement('input')
+  input.type = 'file'
+  input.accept = 'audio/*'
+  input.onchange = () => { const f = input.files?.[0]; if (f) importAudioFile(f) }
+  input.click()
 }
 
 export function selectClip(ref: ClipRef | null, openDetail = false) {
