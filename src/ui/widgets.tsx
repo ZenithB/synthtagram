@@ -11,6 +11,32 @@ export function capturePointer(e: React.PointerEvent) {
   try { (e.target as HTMLElement).setPointerCapture(e.pointerId) } catch { /* synthetic events */ }
 }
 
+/**
+ * Robust vertical drag for knobs/faders. Listens on window (not the element)
+ * so the release is ALWAYS caught — even if the control re-renders mid-drag,
+ * the pointer leaves the element, the window blurs, or the OS cancels the
+ * gesture. This replaces the setPointerCapture approach, which silently leaked
+ * captures when the knob re-rendered on each value change, leaving it "stuck"
+ * to the cursor. Returns nothing; the caller wires onMove/onEnd.
+ */
+export function beginVDrag(onMove: (e: PointerEvent) => void, onEnd?: () => void) {
+  const move = (e: PointerEvent) => onMove(e)
+  const end = () => {
+    window.removeEventListener('pointermove', move)
+    window.removeEventListener('pointerup', end)
+    window.removeEventListener('pointercancel', end)
+    window.removeEventListener('blur', end)
+    document.removeEventListener('visibilitychange', onHidden)
+    onEnd?.()
+  }
+  const onHidden = () => { if (document.hidden) end() }
+  window.addEventListener('pointermove', move)
+  window.addEventListener('pointerup', end)
+  window.addEventListener('pointercancel', end)
+  window.addEventListener('blur', end)
+  document.addEventListener('visibilitychange', onHidden)
+}
+
 // ---------------- Knob ----------------
 
 function toNorm(v: number, s: ParamSpec) {
@@ -32,22 +58,19 @@ export function Knob({ spec, value, onChange, size = 36, accent }: {
   accent?: string
 }) {
   const [drag, setDrag] = useState(false)
-  const ref = useRef({ startY: 0, startNorm: 0 })
   const norm = toNorm(clamp(value ?? spec.def, spec.min, spec.max), spec)
 
   const onPointerDown = (e: React.PointerEvent) => {
+    if (e.button !== 0) return
     e.preventDefault()
-    capturePointer(e)
-    ref.current = { startY: e.clientY, startNorm: norm }
+    const startY = e.clientY
+    const startNorm = norm
     setDrag(true)
+    beginVDrag(
+      ev => onChange(fromNorm(startNorm + (startY - ev.clientY) / (ev.shiftKey ? 900 : 180), spec)),
+      () => setDrag(false),
+    )
   }
-  const onPointerMove = (e: React.PointerEvent) => {
-    if (!drag) return
-    const range = e.shiftKey ? 900 : 180
-    const n = ref.current.startNorm + (ref.current.startY - e.clientY) / range
-    onChange(fromNorm(n, spec))
-  }
-  const onPointerUp = () => setDrag(false)
 
   const a0 = -135
   const a1 = a0 + norm * 270
@@ -65,7 +88,7 @@ export function Knob({ spec, value, onChange, size = 36, accent }: {
     <div className={`knob ${drag ? 'dragging' : ''}`} style={{ width: size + 12 }}
       data-info={`${spec.label}: drag to change, Shift = fine, double-click = reset`}
       onDoubleClick={() => onChange(spec.def)}>
-      <svg width={size} height={size} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp}>
+      <svg width={size} height={size} onPointerDown={onPointerDown}>
         <circle cx={r} cy={r} r={r - 3} className="knob-track" />
         {norm > 0.004 && <path d={`M ${x1} ${y1} A ${r - 3} ${r - 3} 0 ${large} 1 ${x2} ${y2}`} className="knob-arc" style={accent ? { stroke: accent } : undefined} />}
         <line x1={r} y1={r} x2={r + (r - 7) * Math.cos(((a1 - 90) * Math.PI) / 180)} y2={r + (r - 7) * Math.sin(((a1 - 90) * Math.PI) / 180)} className="knob-needle" />
@@ -84,19 +107,15 @@ export function Fader({ value, min = -48, max = 6, onChange, height = 76 }: {
   const norm = clamp((value - min) / (max - min), 0, 1)
   const ref = useRef<HTMLDivElement>(null)
   const drag = (e: React.PointerEvent) => {
-    const el = ref.current!
-    const rect = el.getBoundingClientRect()
-    const move = (ev: PointerEvent) => {
+    if (e.button !== 0) return
+    e.preventDefault()
+    const rect = ref.current!.getBoundingClientRect()
+    const apply = (ev: PointerEvent) => {
       const n = clamp(1 - (ev.clientY - rect.top) / rect.height, 0, 1)
       onChange(Math.round((min + n * (max - min)) * 10) / 10)
     }
-    move(e.nativeEvent)
-    const up = () => {
-      window.removeEventListener('pointermove', move)
-      window.removeEventListener('pointerup', up)
-    }
-    window.addEventListener('pointermove', move)
-    window.addEventListener('pointerup', up)
+    apply(e.nativeEvent)
+    beginVDrag(apply)
   }
   return (
     <div ref={ref} className="fader" style={{ height }} onPointerDown={drag}
@@ -129,23 +148,22 @@ export function MeterBar({ getDb, height = 76 }: { getDb: () => number; height?:
 export function NumberDrag({ value, onChange, min, max, step = 1, suffix = '', info }: {
   value: number; onChange: (v: number) => void; min: number; max: number; step?: number; suffix?: string; info?: string
 }) {
-  const ref = useRef({ y: 0, v: 0 })
   const [drag, setDrag] = useState(false)
   return (
     <span
       className={`numdrag ${drag ? 'dragging' : ''}`}
       data-info={info ?? 'Drag vertically to change'}
       onPointerDown={e => {
-        capturePointer(e)
-        ref.current = { y: e.clientY, v: value }
+        if (e.button !== 0) return
+        e.preventDefault()
+        const startY = e.clientY
+        const startV = value
         setDrag(true)
+        beginVDrag(
+          ev => onChange(clamp(Math.round((startV + ((startY - ev.clientY) / 3) * step) / step) * step, min, max)),
+          () => setDrag(false),
+        )
       }}
-      onPointerMove={e => {
-        if (!drag) return
-        const dv = ((ref.current.y - e.clientY) / 3) * step
-        onChange(clamp(Math.round((ref.current.v + dv) / step) * step, min, max))
-      }}
-      onPointerUp={() => setDrag(false)}
       onDoubleClick={() => {
         const v = prompt('Value', String(value))
         if (v && !isNaN(+v)) onChange(clamp(+v, min, max))
