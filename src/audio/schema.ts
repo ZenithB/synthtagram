@@ -262,6 +262,15 @@ export const EFFECTS: EffectSchema[] = [
       { key: 'curve', label: 'Release', min: 0.1, max: 1, def: 0.5, fmt: fmtPct },
     ],
   },
+  {
+    type: 'autotune', label: 'Auto-Tune', icon: 'autotune',
+    params: [
+      { key: 'amount', label: 'Amount', min: 0, max: 1, def: 1, fmt: fmtPct },
+      { key: 'speed', label: 'Speed', min: 1, max: 200, def: 20, exp: true, fmt: v => `${Math.round(v)}ms` },
+      { key: 'mix', label: 'Mix', min: 0, max: 1, def: 1, fmt: fmtPct },
+      { key: 'mode', label: 'Snap', min: 0, max: 1, def: 0, int: true, steps: ['Key', 'Chr'] },
+    ],
+  },
 ]
 
 export function instSchema(type: string) {

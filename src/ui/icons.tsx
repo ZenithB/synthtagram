@@ -201,6 +201,11 @@ const ICONS: Record<string, React.ReactNode> = {
     <path d="M5.4 13 V3.6 M3.2 5.8 L5.4 3.6 L7.6 5.8" />
     <path d="M10.6 3 V12.4 M8.4 10.2 L10.6 12.4 L12.8 10.2" opacity="0.6" />
   </>,
+  // pitch snapped to discrete steps (quantize staircase) + a corrected note dot
+  autotune: <>
+    <path d="M2 12 H5 V9 H8 V6 H11 V3 H14" />
+    <circle cx="5" cy="9" r="1.1" {...F} />
+  </>,
 }
 
 export function Icon({ name, size = 14, className }: { name: string; size?: number; className?: string }) {

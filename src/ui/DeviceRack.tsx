@@ -7,6 +7,7 @@ import * as Y from 'yjs'
 import { DRUM_PADS } from '../types'
 import {
   trackById, setInstParam, setInstrument, addFx, removeFx, moveFx, setFxParam, setFxOn,
+  setInstOut, setFxOut,
   addLfo, removeLfo, setLfoField, setLfoTarget, setSend,
   addMidiFx, removeMidiFx, setMidiFxParam, setMidiFxOn, midifxOf,
   ensureMacros, macrosOf, setMacroValue, addMacroTarget, clearMacroTargets, setMacroName,
@@ -17,7 +18,7 @@ import { useY, useRaf } from './hooks'
 import { Knob, openMenu } from './widgets'
 import {
   INSTRUMENTS, EFFECTS, instSchema, fxSchema, defaultsFor,
-  LFO_SHAPES, LFO_DIVS, LFO_PARAMS, MIDI_FX, midiFxSchema, mixSpec, fmtPct, ParamSpec,
+  LFO_SHAPES, LFO_DIVS, LFO_PARAMS, MIDI_FX, midiFxSchema, mixSpec, fmtPct, fmtDb, ParamSpec,
 } from '../audio/schema'
 import { INST_PRESETS, DRUM_KITS } from '../packs'
 import { engine } from '../audio/engine'
@@ -28,6 +29,33 @@ import { Icon } from './icons'
 const SEND_A_SPEC: ParamSpec = { key: 'sendA', label: '→ A', min: 0, max: 1, def: 0, fmt: fmtPct }
 const SEND_B_SPEC: ParamSpec = { key: 'sendB', label: '→ B', min: 0, max: 1, def: 0, fmt: fmtPct }
 const MACRO_SPEC: ParamSpec = { key: 'm', label: '', min: 0, max: 1, def: 0, fmt: fmtPct }
+const OUT_SPEC: ParamSpec = { key: 'out', label: 'Out', min: -30, max: 30, def: 0, fmt: fmtDb }
+
+// Per-device output meter (level shown AFTER the output knob), styled like the
+// LFO scope. Polls only while its device rack is mounted (selected track).
+function DevMeter({ trackId, deviceId }: { trackId: string; deviceId: string }) {
+  const ref = useRef<HTMLDivElement>(null)
+  useRaf(() => {
+    if (!ref.current) return
+    const db = engine.deviceMeterDb(trackId, deviceId)
+    const norm = Math.max(0, Math.min(1, (db + 60) / 66))
+    const col = db > -3 ? 'var(--danger)' : db > -10 ? 'var(--warn)' : 'var(--ok)'
+    ref.current.style.width = `${norm * 100}%`
+    ref.current.style.background = col
+    ref.current.style.boxShadow = norm > 0.02 ? `0 0 5px ${col}` : 'none'
+  })
+  return <div className="dev-meter"><div ref={ref} className="dev-meter-fill" /></div>
+}
+
+// Meter + pre-meter output knob footer shared by every device card.
+function DeviceOut({ trackId, deviceId, out, onChange }: { trackId: string; deviceId: string; out: number; onChange: (v: number) => void }) {
+  return (
+    <div className="device-out" data-info="Output level (pre-meter) — trim this device before the next">
+      <DevMeter trackId={trackId} deviceId={deviceId} />
+      <Knob spec={OUT_SPEC} value={out} onChange={onChange} size={30} />
+    </div>
+  )
+}
 
 function targetRange(track: Y.Map<any>, dest: string, fxId: string, pkey: string): [number, number] {
   let spec
@@ -208,6 +236,7 @@ function InstrumentPanel({ trackId, track }: { trackId: string; track: Y.Map<any
           ))}
         </div>
       )}
+      <DeviceOut trackId={trackId} deviceId="inst" out={inst.get('out') ?? 0} onChange={v => setInstOut(trackId, v)} />
     </div>
   )
 }
@@ -234,6 +263,7 @@ function FxCard({ trackId, fx }: { trackId: string; fx: Y.Map<any> }) {
           <Knob key={spec.key} spec={spec} value={params.get(spec.key) ?? spec.def} onChange={v => setFxParam(trackId, fxId, spec.key, v)} size={38} />
         ))}
       </div>
+      <DeviceOut trackId={trackId} deviceId={fxId} out={fx.get('out') ?? 0} onChange={v => setFxOut(trackId, fxId, v)} />
     </div>
   )
 }

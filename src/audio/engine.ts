@@ -21,11 +21,13 @@ import { setUI, toast, ui } from '../state/store'
 
 const STOP = '__stop__'
 
-type BuiltFx = { id: string; type: string; fx: Fx }
+type BuiltFx = { id: string; type: string; fx: Fx; out: Tone.Volume; meter: Tone.Meter }
 type BuiltTrack = {
   id: string
   kind: string
   inst: Inst
+  instOut: Tone.Volume
+  instMeter: Tone.Meter
   fx: BuiltFx[]
   panner: StereoPannerNode
   vol: Tone.Volume
@@ -364,7 +366,14 @@ class Engine {
     const inst = makeInstrument(it.get('type'), (it.get('params') as Y.Map<number>).toJSON(), buf)
     const fx: BuiltFx[] = []
     ;(t.get('fx') as Y.Array<Y.Map<any>>).forEach(f => {
-      if (f.get('on')) fx.push({ id: f.get('id'), type: f.get('type'), fx: makeEffect(f.get('type'), (f.get('params') as Y.Map<number>).toJSON()) })
+      if (f.get('on')) fx.push({
+        id: f.get('id'), type: f.get('type'),
+        fx: makeEffect(f.get('type'), (f.get('params') as Y.Map<number>).toJSON()),
+        // per-device output level (pre-meter) + its level meter (Tone.Volume
+        // preserves stereo; Tone.Channel/Panner would downmix)
+        out: new Tone.Volume(f.get('out') ?? 0),
+        meter: new Tone.Meter({ smoothing: 0.8 }),
+      })
     })
     // Stereo-preserving strip: pan → volume. We use a RAW StereoPannerNode
     // because Tone.Panner (like Tone.Channel) downmixes stereo input to mono —
@@ -374,9 +383,21 @@ class Engine {
     panner.pan.value = t.get('pan') ?? 0
     const vol = new Tone.Volume(t.get('gain') ?? 0)
     const meter = new Tone.Meter({ smoothing: 0.8 })
-    const chainNodes: any[] = [inst.out, ...fx.map(f => f.fx.node)]
-    for (let i = 0; i < chainNodes.length - 1; i++) Tone.connect(chainNodes[i], chainNodes[i + 1])
-    Tone.connect(chainNodes[chainNodes.length - 1], panner)
+    // Per device: node → outGain → meter(tap); series continues from outGain so
+    // the output knob is genuinely PRE-meter. Instrument first, then each fx.
+    const instOut = new Tone.Volume(it.get('out') ?? 0)
+    const instMeter = new Tone.Meter({ smoothing: 0.8 })
+    Tone.connect(inst.out, instOut)
+    instOut.connect(instMeter) // .connect (not Tone.connect) so the meter reads POST-gain
+    let prev: any = instOut
+    fx.forEach(bf => {
+      Tone.connect(prev, bf.fx.node)
+      if (bf.fx.detect) Tone.connect(prev, bf.fx.detect) // pre-effect tap (Auto-Tune)
+      Tone.connect(bf.fx.node, bf.out)
+      bf.out.connect(bf.meter)
+      prev = bf.out
+    })
+    Tone.connect(prev, panner)
     Tone.connect(panner, vol)
     vol.connect(this.master)
     vol.connect(meter)
@@ -386,7 +407,7 @@ class Engine {
     vol.connect(sendA)
     vol.connect(sendB)
     const rec: BuiltTrack = {
-      id: tid, kind: t.get('kind'), inst, fx, panner, vol, meter, sendA, sendB,
+      id: tid, kind: t.get('kind'), inst, instOut, instMeter, fx, panner, vol, meter, sendA, sendB,
       part: null, player: null, partKey: null, partStartTicks: 0, partLoopTicks: BAR,
       queuedKey: null, queuedPart: null, unobserve: null,
     }
@@ -455,7 +476,9 @@ class Engine {
     this.stopTrackNow(rec)
     try {
       rec.inst.dispose()
-      rec.fx.forEach(f => f.fx.dispose())
+      rec.instOut.dispose()
+      rec.instMeter.dispose()
+      rec.fx.forEach(f => { f.fx.dispose(); f.out.dispose(); f.meter.dispose() })
       rec.panner.disconnect()
       rec.vol.dispose()
       rec.meter.dispose()
@@ -532,6 +555,15 @@ class Engine {
             const v = (ev.target as Y.Map<number>).get(key)
             if (typeof v === 'number') rec.inst.set(key, v)
           })
+        } else if (path.length === 2) {
+          // direct keys on the instrument map: 'out' is a live gain, everything
+          // else (type / sampleId / params swap) needs a rebuild
+          let rebuild = false
+          ev.changes.keys.forEach((_c, key) => {
+            if (key === 'out') rec.instOut.volume.rampTo((t.get('inst') as Y.Map<any>).get('out') ?? 0, 0.03)
+            else rebuild = true
+          })
+          if (rebuild) structural.add(tid)
         } else structural.add(tid)
       } else if (path[1] === 'fx') {
         if (path.length >= 4 && path[3] === 'params') {
@@ -543,6 +575,16 @@ class Engine {
               if (typeof v === 'number') bf.fx.set(key, v)
             })
           } else structural.add(tid)
+        } else if (path.length === 3) {
+          // direct keys on an fx map: 'out' is a live gain; 'on'/'type' rebuild
+          const fxMap = (t.get('fx') as Y.Array<Y.Map<any>>).get(path[2] as number)
+          const bf = fxMap && rec.fx.find(f => f.id === fxMap.get('id'))
+          let rebuild = false
+          ev.changes.keys.forEach((_c, key) => {
+            if (key === 'out' && bf) bf.out.volume.rampTo(fxMap!.get('out') ?? 0, 0.03)
+            else rebuild = true
+          })
+          if (rebuild || !bf) structural.add(tid)
         } else structural.add(tid)
       }
     }
@@ -1087,6 +1129,16 @@ class Engine {
     const rec = this.built.get(trackId)
     if (!rec) return -100
     const v = rec.meter.getValue()
+    return typeof v === 'number' ? v : Math.max(...(v as number[]))
+  }
+
+  /** Per-device output level in dB. deviceId = 'inst' or an fx id. */
+  deviceMeterDb(trackId: string, deviceId: string): number {
+    const rec = this.built.get(trackId)
+    if (!rec) return -100
+    const meter = deviceId === 'inst' ? rec.instMeter : rec.fx.find(f => f.id === deviceId)?.meter
+    if (!meter) return -100
+    const v = meter.getValue()
     return typeof v === 'number' ? v : Math.max(...(v as number[]))
   }
 

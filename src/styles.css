@@ -473,6 +473,12 @@ button { cursor: pointer; background: none; border: none; }
 .add-lfo .icon { color: var(--accent2); }
 .add-lfo:hover { color: var(--accent2); border-color: var(--accent2); }
 
+/* ---------------- per-device output meter + knob ---------------- */
+.device-out { display: flex; align-items: center; gap: 8px; margin-top: 7px; padding-top: 7px; border-top: 1px solid var(--border); }
+.dev-meter { position: relative; flex: 1; min-width: 44px; height: 7px; background: var(--bg0); border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
+.dev-meter-fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0%; background: var(--ok); border-radius: 3px; transition: background 0.1s; }
+.device-out .knob-wrap { margin: 0; }
+
 /* ---------------- context-menu value rows ---------------- */
 .ctx-row { display: flex; align-items: center; gap: 4px; padding: 3px 8px; }
 .ctx-row-head { color: var(--dim); font-size: 10px; text-transform: uppercase; letter-spacing: 0.7px; gap: 6px; padding-top: 5px; }

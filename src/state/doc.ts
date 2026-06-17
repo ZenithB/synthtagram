@@ -55,14 +55,14 @@ export type ClipJSON = {
   env?: Record<string, { t: number; v: number }[]>
   follow?: { on: boolean; bars: number; action: number; chance: number }
 }
-export type FxJSON = { id?: string; type: string; on: boolean; params: Record<string, number> }
+export type FxJSON = { id?: string; type: string; on: boolean; params: Record<string, number>; out?: number }
 export type LfoJSON = { id?: string; on: number; shape: number; sync: number; rate: number; hz: number; depth: number; phase: number; dest: string; fxId: string; pkey: string }
 export type MacroJSON = { name: string; value: number; targets: { dest: string; fxId: string; pkey: string }[] }
 export type MidiFxJSON = { id?: string; type: string; on: boolean; params: Record<string, number> }
 export type ReturnJSON = { id?: string; name: string; fxType: string; params: Record<string, number>; gain: number }
 export type TrackJSON = {
   id?: string; name: string; color: number; kind: TrackKind
-  inst: { type: string; params: Record<string, number>; sampleId?: string; sampleName?: string }
+  inst: { type: string; params: Record<string, number>; sampleId?: string; sampleName?: string; out?: number }
   fx: FxJSON[]
   gain: number; pan: number; mute: boolean; solo: boolean
   sendA?: number; sendB?: number
@@ -131,6 +131,7 @@ function yFx(fx: FxJSON) {
   m.set('id', fx.id ?? id8())
   m.set('type', fx.type)
   m.set('on', fx.on)
+  m.set('out', fx.out ?? 0)
   const pm = new Y.Map<number>()
   for (const [k, v] of Object.entries(fx.params)) pm.set(k, v)
   m.set('params', pm)
@@ -173,6 +174,7 @@ function yTrack(t: TrackJSON) {
   const pm = new Y.Map<number>()
   for (const [k, v] of Object.entries(t.inst.params)) pm.set(k, v)
   inst.set('params', pm)
+  inst.set('out', t.inst.out ?? 0)
   if (t.inst.sampleId) { inst.set('sampleId', t.inst.sampleId); inst.set('sampleName', t.inst.sampleName ?? '') }
   m.set('inst', inst)
   const fxArr = new Y.Array<Y.Map<any>>()
@@ -374,7 +376,7 @@ export function moveFx(trackId: string, fxId: string, dir: -1 | 1) {
     const j = i + dir
     if (i < 0 || j < 0 || j >= fx.length) return
     const f = fx.get(i)
-    const json = { type: f.get('type'), on: f.get('on'), params: Object.fromEntries((f.get('params') as Y.Map<number>).entries()) }
+    const json = { id: f.get('id'), type: f.get('type'), on: f.get('on'), out: f.get('out') ?? 0, params: Object.fromEntries((f.get('params') as Y.Map<number>).entries()) }
     fx.delete(i)
     fx.insert(j, [yFx(json)])
   })
@@ -395,6 +397,23 @@ export function setFxOn(trackId: string, fxId: string, on: boolean) {
     if (!t) return
     const i = fxIndex(t, fxId)
     if (i >= 0) (t.get('fx') as Y.Array<Y.Map<any>>).get(i).set('on', on)
+  })
+}
+
+/** Per-device output level (dB), applied pre-meter. */
+export function setInstOut(trackId: string, db: number) {
+  mutate('Device output', () => {
+    const t = trackById(trackId)
+    if (t) (t.get('inst') as Y.Map<any>).set('out', db)
+  })
+}
+
+export function setFxOut(trackId: string, fxId: string, db: number) {
+  mutate('Device output', () => {
+    const t = trackById(trackId)
+    if (!t) return
+    const i = fxIndex(t, fxId)
+    if (i >= 0) (t.get('fx') as Y.Array<Y.Map<any>>).get(i).set('out', db)
   })
 }
 
@@ -915,7 +934,7 @@ export function exportProject(): ProjectJSON {
     },
     tracks: tracks.toArray().map(t => {
       const inst = t.get('inst') as Y.Map<any>
-      const instJson: TrackJSON['inst'] = { type: inst.get('type'), params: Object.fromEntries((inst.get('params') as Y.Map<number>).entries()) }
+      const instJson: TrackJSON['inst'] = { type: inst.get('type'), params: Object.fromEntries((inst.get('params') as Y.Map<number>).entries()), out: inst.get('out') ?? 0 }
       if (inst.get('sampleId')) { instJson.sampleId = inst.get('sampleId'); instJson.sampleName = inst.get('sampleName') ?? '' }
       const lfos = (t.get('lfos') as Y.Array<Y.Map<any>> | undefined)?.toArray().map(l => ({
         id: l.get('id'), on: l.get('on'), shape: l.get('shape'), sync: l.get('sync'), rate: l.get('rate'),
@@ -932,7 +951,7 @@ export function exportProject(): ProjectJSON {
         id: t.get('id'), name: t.get('name'), color: t.get('color'), kind: t.get('kind'),
         inst: instJson,
         fx: (t.get('fx') as Y.Array<Y.Map<any>>).toArray().map(f => ({
-          id: f.get('id'), type: f.get('type'), on: f.get('on'),
+          id: f.get('id'), type: f.get('type'), on: f.get('on'), out: f.get('out') ?? 0,
           params: Object.fromEntries((f.get('params') as Y.Map<number>).entries()),
         })),
         gain: t.get('gain'), pan: t.get('pan'), mute: t.get('mute'), solo: t.get('solo'),

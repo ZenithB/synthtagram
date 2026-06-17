@@ -6,6 +6,37 @@
 
 import * as Tone from 'tone'
 import { WAVES, DELAY_FRACTIONS, DUCK_DIV_TICKS } from './schema'
+import { snapToScale } from '../theory'
+import { meta } from '../state/doc'
+
+// Monophonic pitch detector (YIN cumulative-mean-normalized difference) used by
+// Auto-Tune. Returns the fundamental in Hz, or 0 if no clear pitch.
+function detectPitchHz(buf: Float32Array, sr: number): number {
+  const n = buf.length
+  const maxTau = Math.min(n - 256, Math.floor(sr / 70))   // down to ~70 Hz
+  const minTau = Math.max(2, Math.floor(sr / 1100))        // up to ~1100 Hz
+  if (maxTau <= minTau + 2) return 0
+  const cmnd = new Float32Array(maxTau)
+  let running = 0
+  for (let tau = minTau; tau < maxTau; tau++) {
+    let sum = 0
+    for (let i = 0; i < n - maxTau; i++) { const d = buf[i] - buf[i + tau]; sum += d * d }
+    running += sum
+    cmnd[tau] = running > 0 ? (sum * (tau - minTau + 1)) / running : 1
+  }
+  const thr = 0.15
+  let tau = -1
+  for (let t = minTau + 1; t < maxTau - 1; t++) {
+    if (cmnd[t] < thr) { while (t + 1 < maxTau && cmnd[t + 1] < cmnd[t]) t++; tau = t; break }
+  }
+  if (tau < 0) {
+    let best = 1, bt = -1
+    for (let t = minTau; t < maxTau; t++) if (cmnd[t] < best) { best = cmnd[t]; bt = t }
+    if (best > 0.4) return 0
+    tau = bt
+  }
+  return tau > 0 ? sr / tau : 0
+}
 
 export type Inst = {
   out: Tone.ToneAudioNode
@@ -20,6 +51,9 @@ export type Fx = {
   node: Tone.ToneAudioNode
   set: (key: string, v: number) => void
   tick?: (posTicks: number, playing: boolean, bpm: number) => void
+  // Effects that need to analyse their *input* (e.g. Auto-Tune pitch detection)
+  // expose a raw AnalyserNode; the engine taps the pre-effect signal into it.
+  detect?: AnalyserNode
   dispose: () => void
 }
 
@@ -557,6 +591,52 @@ export function makeEffect(type: string, p: Record<string, number>): Fx {
           node.gain.setTargetAtTime(Math.max(0, g), Tone.now(), 0.004)
         },
         dispose: () => node.dispose(),
+      }
+    }
+    case 'autotune': {
+      // Monophonic auto-tune: detect the input pitch every frame, snap it to the
+      // project key/scale (or chromatic), and drive a granular pitch-shifter by
+      // the difference. The analyser taps the DRY input (engine wires prev→detect).
+      const ctx = Tone.getContext().rawContext as AudioContext
+      const node = new Tone.PitchShift({ windowSize: 0.06, delayTime: 0, feedback: 0 })
+      node.wet.value = p.mix ?? 1
+      const detect = ctx.createAnalyser()
+      detect.fftSize = 2048
+      const buf = new Float32Array(detect.fftSize)
+      const sr = ctx.sampleRate
+      let amount = p.amount ?? 1, speedMs = p.speed ?? 20, mode = (p.mode ?? 0) | 0
+      let cur = 0 // current shift (semitones), smoothed toward the target
+      return {
+        node,
+        detect,
+        set: (k, v) => {
+          if (k === 'amount') amount = v
+          else if (k === 'speed') speedMs = v
+          else if (k === 'mix') node.wet.value = v
+          else if (k === 'mode') mode = v | 0
+        },
+        tick: () => {
+          detect.getFloatTimeDomainData(buf)
+          let rms = 0
+          for (let i = 0; i < buf.length; i++) rms += buf[i] * buf[i]
+          rms = Math.sqrt(rms / buf.length)
+          let desired = cur
+          if (rms > 0.004) {
+            const f = detectPitchHz(buf, sr)
+            if (f > 0) {
+              const midi = 69 + 12 * Math.log2(f / 440)
+              let target: number
+              if (mode === 1) target = Math.round(midi)
+              else target = snapToScale(Math.round(midi), (meta.get('root') ?? 9) as number, (meta.get('scale') ?? 'minor') as string)
+              desired = Math.max(-12, Math.min(12, (target - midi) * amount))
+            }
+          }
+          // exponential glide toward target; ~speedMs time constant at 60fps
+          const coeff = 1 - Math.exp(-1 / Math.max(1, (speedMs / 1000) * 60))
+          cur += (desired - cur) * coeff
+          node.pitch = cur
+        },
+        dispose: () => { node.dispose(); try { detect.disconnect() } catch { /* ok */ } },
       }
     }
     default: {
