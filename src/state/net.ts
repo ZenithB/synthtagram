@@ -91,8 +91,39 @@ export async function startP2P() {
   }
   setUI({ netStatus: 'connecting' })
   try {
-    const { joinRoom } = await import('trystero')
-    const room = joinRoom({ appId: 'synthtagram-v1' }, roomId)
+    const trystero = await import('trystero')
+    const { joinRoom } = trystero
+    const getRelaySockets = (trystero as any).getRelaySockets as (() => Record<string, WebSocket>) | undefined
+    // Trystero only ships STUN by default, so two devices on different networks
+    // discover each other via the relays but can't open a direct WebRTC channel
+    // (state never transfers). Add public TURN relays so connections traverse NAT.
+    const room = joinRoom({
+      appId: 'synthtagram-v1',
+      // Trystero's built-in relay list is largely dead in 0.21.x (most fail to
+      // connect), so peer discovery is fragile. Pin well-known, reliable public
+      // Nostr relays and connect to all of them so two peers always share one.
+      relayUrls: [
+        'wss://relay.damus.io',
+        'wss://nos.lol',
+        'wss://relay.nostr.band',
+        'wss://relay.primal.net',
+        'wss://offchain.pub',
+        'wss://nostr.mom',
+        'wss://relay.snort.social',
+      ],
+      relayRedundancy: 7,
+      rtcConfig: {
+        iceServers: [
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun.cloudflare.com:3478' },
+          { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+          { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+          { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+        ],
+      },
+    }, roomId)
+    // expose for diagnosing connectivity from the console
+    ;(window as any).__p2p = { room, peers: () => Object.keys(room.getPeers()), relays: () => getRelaySockets?.() }
     const [sendU, onU] = room.makeAction<Uint8Array>('yu')
     const [sendS, onS] = room.makeAction<Uint8Array>('ys')
     const [sendA, onA] = room.makeAction<Uint8Array>('aw')
@@ -106,13 +137,22 @@ export async function startP2P() {
     onA((u, _peer) => applyAwarenessUpdate(awareness, new Uint8Array(u as any), REMOTE))
 
     room.onPeerJoin(peer => {
-      // hand the newcomer the full project + everyone they should know about
-      sendS(Y.encodeStateAsUpdate(doc), peer).catch(() => {})
-      sendA(encodeAwarenessUpdate(awareness, [...awareness.getStates().keys()]), peer).catch(() => {})
+      console.info('[sf-p2p] peer joined', peer)
+      // hand the newcomer the full project + everyone they should know about.
+      // Resend a couple of times — the data channel may have just opened and an
+      // immediate send can race it, which would leave the joiner stuck blank.
+      const pushState = () => {
+        sendS(Y.encodeStateAsUpdate(doc), peer).catch(() => {})
+        sendA(encodeAwarenessUpdate(awareness, [...awareness.getStates().keys()]), peer).catch(() => {})
+      }
+      pushState()
+      setTimeout(pushState, 600)
+      setTimeout(pushState, 2000)
       setUI({ netStatus: 'online' })
       toast('A friend connected')
     })
-    room.onPeerLeave(() => {
+    room.onPeerLeave(peer => {
+      console.info('[sf-p2p] peer left', peer)
       if (Object.keys(room.getPeers()).length === 0) setUI({ netStatus: 'connecting' })
     })
 
