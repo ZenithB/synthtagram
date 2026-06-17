@@ -1,8 +1,13 @@
 // Collaboration transport. Two layers, both optional and additive:
 //  1. BroadcastChannel — instant sync between tabs of the same browser (also
 //     our offline/demo path, zero network needed).
-//  2. Trystero — serverless WebRTC mesh; peers discover each other via public
-//     nostr relays, then talk directly. No backend to run or pay for.
+//  2. Trystero — serverless WebRTC mesh. The only thing that ever fails here is
+//     *signaling* (the public relay that introduces two strangers); once peers
+//     find each other they talk directly. Any single public relay network can
+//     be down, gatekept, or firewalled on a given network, so we join the SAME
+//     room over SEVERAL strategies at once (BitTorrent trackers + Nostr relays,
+//     both on :443) and bridge them all to one Yjs doc. Whichever network
+//     introduces the peers wins; the other is harmless redundancy.
 // Yjs guarantees convergence regardless of delivery order/duplication.
 
 import * as Y from 'yjs'
@@ -84,88 +89,132 @@ bc.postMessage({ kind: 'hi' })
 // ---------- Trystero (cross-device P2P) ----------
 let trysteroSendAware: ((u: Uint8Array) => void) | null = null
 
+type Sender = (u: Uint8Array, target?: string) => void
+type WiredRoom = { label: string; room: any; sendS: Sender }
+const wiredRooms: WiredRoom[] = []
+const sendUFns: Sender[] = []
+const sendAFns: Sender[] = []
+let announcedOnline = false
+
+function anyPeers() {
+  return wiredRooms.some(r => Object.keys(r.room.getPeers()).length > 0)
+}
+
 export async function startP2P() {
   if (!roomId) {
     setUI({ netStatus: 'local' })
     return
   }
   setUI({ netStatus: 'connecting' })
-  try {
-    // Use the MQTT strategy, NOT the default Nostr one. Public Nostr relays now
-    // reject Trystero's anonymous ephemeral keys ("not in our web of trust") and
-    // are frequently overloaded (503), so peers never discover each other. Public
-    // MQTT brokers are built for anonymous pub/sub and are far more reliable.
-    const trystero = await import('trystero/mqtt')
-    const { joinRoom } = trystero
-    const getRelaySockets = (trystero as any).getRelaySockets as (() => Record<string, WebSocket>) | undefined
-    // Trystero only ships STUN by default, so two devices on different networks
-    // discover each other via the brokers but can't open a direct WebRTC channel
-    // (state never transfers). Add public TURN relays so connections traverse NAT.
-    const room = joinRoom({
-      appId: 'synthtagram-v1',
-      relayUrls: [
-        'wss://broker.emqx.io:8084/mqtt',
-        'wss://broker.hivemq.com:8884/mqtt',
-        'wss://test.mosquitto.org:8081/mqtt',
-      ],
-      relayRedundancy: 3,
-      rtcConfig: {
-        iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun.cloudflare.com:3478' },
-          { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
-          { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
-          { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
-        ],
-      },
-    }, roomId)
-    // expose for diagnosing connectivity from the console
-    ;(window as any).__p2p = { room, peers: () => Object.keys(room.getPeers()), relays: () => getRelaySockets?.() }
-    const [sendU, onU] = room.makeAction<Uint8Array>('yu')
-    const [sendS, onS] = room.makeAction<Uint8Array>('ys')
-    const [sendA, onA] = room.makeAction<Uint8Array>('aw')
-    trysteroSendAware = u => { sendA(u).catch(() => {}) }
 
-    doc.on('update', (update: Uint8Array, origin: any) => {
-      if (origin !== REMOTE) sendU(update).catch(() => {})
-    })
-    onU((u, _peer) => Y.applyUpdate(doc, new Uint8Array(u as any), REMOTE))
-    onS((u, _peer) => Y.applyUpdate(doc, new Uint8Array(u as any), REMOTE))
-    onA((u, _peer) => applyAwarenessUpdate(awareness, new Uint8Array(u as any), REMOTE))
+  // Shared config for every strategy. TURN goes in `turnConfig` (NOT
+  // rtcConfig.iceServers) — Trystero concats it onto its default Google/
+  // Cloudflare STUN. Overriding rtcConfig.iceServers would DROP that STUN.
+  // STUN alone got phone↔laptop working originally; TURN is a bonus for
+  // symmetric-NAT cases and is purely additive (dead TURN just falls back).
+  const config = {
+    appId: 'synthtagram-v1',
+    relayRedundancy: 5,
+    turnConfig: [
+      { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+      { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+      { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+    ],
+  }
 
-    room.onPeerJoin(peer => {
-      console.info('[sf-p2p] peer joined', peer)
-      // hand the newcomer the full project + everyone they should know about.
-      // Resend a couple of times — the data channel may have just opened and an
-      // immediate send can race it, which would leave the joiner stuck blank.
+  const applyDoc = (u: any) => Y.applyUpdate(doc, new Uint8Array(u), REMOTE)
+  const applyAware = (u: any) => applyAwarenessUpdate(awareness, new Uint8Array(u), REMOTE)
+
+  // Bridge one Trystero room (one signaling strategy) onto the shared doc.
+  const wire = (joinRoom: any, label: string) => {
+    let room: any
+    try {
+      room = joinRoom(config, roomId)
+    } catch (e) {
+      console.warn('[sf-p2p] join failed via', label, e)
+      return
+    }
+    const [sendU, onU] = room.makeAction('yu')
+    const [sendS, onS] = room.makeAction('ys')
+    const [sendA, onA] = room.makeAction('aw')
+    onU((u: any) => applyDoc(u))
+    onS((u: any) => applyDoc(u))
+    onA((u: any) => applyAware(u))
+    sendUFns.push((u, t) => { try { sendU(u, t)?.catch?.(() => {}) } catch { /* ok */ } })
+    sendAFns.push((u, t) => { try { sendA(u, t)?.catch?.(() => {}) } catch { /* ok */ } })
+
+    room.onPeerJoin((peer: string) => {
+      console.info('[sf-p2p] peer joined via', label, peer)
+      // Hand the newcomer the full project + presence. Resend a few times —
+      // the data channel may have just opened and an immediate send can race
+      // it, which would otherwise leave the joiner stuck blank.
       const pushState = () => {
-        sendS(Y.encodeStateAsUpdate(doc), peer).catch(() => {})
-        sendA(encodeAwarenessUpdate(awareness, [...awareness.getStates().keys()]), peer).catch(() => {})
+        try { sendS(Y.encodeStateAsUpdate(doc), peer)?.catch?.(() => {}) } catch { /* ok */ }
+        try { sendA(encodeAwarenessUpdate(awareness, [...awareness.getStates().keys()]), peer)?.catch?.(() => {}) } catch { /* ok */ }
       }
       pushState()
       setTimeout(pushState, 600)
       setTimeout(pushState, 2000)
+      announcedOnline = true
       setUI({ netStatus: 'online' })
       toast('A friend connected')
     })
-    room.onPeerLeave(peer => {
-      console.info('[sf-p2p] peer left', peer)
-      if (Object.keys(room.getPeers()).length === 0) setUI({ netStatus: 'connecting' })
+    room.onPeerLeave((peer: string) => {
+      console.info('[sf-p2p] peer left', label, peer)
+      if (!anyPeers()) setUI({ netStatus: 'connecting' })
     })
 
-    // re-broadcast presence periodically so awareness never times out (30s ttl)
-    setInterval(() => {
-      const u = encodeAwarenessUpdate(awareness, [doc.clientID])
-      sendA(u).catch(() => {})
-      bc.postMessage({ kind: 'a', u })
-    }, 15000)
+    wiredRooms.push({ label, room, sendS })
+  }
 
-    setUI({ netStatus: 'connecting' })
-  } catch (e) {
-    console.warn('P2P unavailable, staying local/tab-sync only', e)
+  // Fan a local change out across every connected strategy. Duplicate
+  // deliveries (a peer reachable via two strategies) are idempotent in Yjs.
+  trysteroSendAware = u => { for (const f of sendAFns) f(u) }
+  doc.on('update', (update: Uint8Array, origin: any) => {
+    if (origin !== REMOTE) for (const f of sendUFns) f(update)
+  })
+
+  // Load + wire each strategy independently so one failing import/relay set
+  // never blocks the others. Both run on :443 (rarely firewalled): WebTorrent
+  // trackers are purpose-built for browser WebRTC signaling and stay quietly
+  // reliable; Nostr is the secondary path (some relays now gatekeep, but
+  // redundancy across the pool means several still accept us). MQTT is omitted
+  // deliberately — its brokers sit on odd ports (the first thing locked-down
+  // networks block), it's the flakiest in practice, and its bundle is ~40x the
+  // others, so it was all cost and little coverage.
+  const strategies: [string, () => Promise<any>][] = [
+    ['torrent', () => import('trystero/torrent')],
+    ['nostr', () => import('trystero/nostr')],
+  ]
+  await Promise.all(strategies.map(async ([label, imp]) => {
+    try {
+      const mod = await imp()
+      wire(mod.joinRoom, label)
+    } catch (e) {
+      console.warn('[sf-p2p] strategy unavailable:', label, e)
+    }
+  }))
+
+  // expose for diagnosing connectivity from the console
+  ;(window as any).__p2p = {
+    rooms: wiredRooms,
+    peers: () => wiredRooms.flatMap(r => Object.keys(r.room.getPeers()).map(p => `${r.label}:${p}`)),
+  }
+
+  if (wiredRooms.length === 0) {
     setUI({ netStatus: 'local' })
     toast('Online sync unavailable — sharing works between tabs only')
+    return
   }
+
+  // re-broadcast presence periodically so awareness never times out (30s ttl)
+  setInterval(() => {
+    const u = encodeAwarenessUpdate(awareness, [doc.clientID])
+    for (const f of sendAFns) f(u)
+    bc.postMessage({ kind: 'a', u })
+  }, 15000)
+
+  if (!announcedOnline) setUI({ netStatus: 'connecting' })
 }
 
 window.addEventListener('beforeunload', () => {
