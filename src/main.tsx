@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client'
 import './styles.css'
 import { App } from './ui/App'
 import { idb, initIfEmpty, isDocEmpty, maybeTakeCarried, roomId } from './state/doc'
-import { startP2P, setPresence } from './state/net'
+import { startP2P, setPresence, requestState } from './state/net'
 import { DEFAULT_PROJECT } from './packs'
 import { initKeyboardPiano, initWebMidi } from './audio/input'
 import { engine } from './audio/engine'
@@ -17,17 +17,28 @@ async function boot() {
   maybeTakeCarried()
 
   if (roomId) {
-    // Joining someone's room: wait for the host's project to arrive over P2P.
-    // Only seed a fresh default if we're genuinely alone (no peer connected) —
-    // otherwise a slow WebRTC handshake would load the demo/default *over* the
-    // incoming shared session and Yjs would merge the two into a mess.
-    const waitForPeer = (ms: number, tries: number) => setTimeout(() => {
-      if (!isDocEmpty()) return            // host's project arrived
-      if (ui.peerCount > 0) { waitForPeer(2000, 0); return } // peer here — keep waiting for state
-      if (tries > 0) { waitForPeer(2500, tries - 1); return } // give the relay handshake more time
-      initIfEmpty(DEFAULT_PROJECT)          // truly alone → start a fresh room
-    }, ms)
-    waitForPeer(3000, 2)
+    // Joining someone's room: wait for the project to arrive over P2P. Crucially
+    // we don't just sit waiting for the host's one-shot push (which can be dropped
+    // on a flaky cellular link, leaving us blank forever) — while the doc is empty
+    // and a peer is present we actively RE-REQUEST the full state (pull). Hard caps
+    // guarantee we never stay blank: alone → seed a fresh default quickly; peer
+    // present but no state after the cap → seed default as a last resort (Yjs
+    // merges cleanly if the real project then shows up late).
+    const t0 = performance.now()
+    const ALONE_GIVEUP = 9000     // no peer this long → we're genuinely alone
+    const HARD_CAP = 22000        // peer present but silent this long → stop waiting
+    const tick = () => {
+      if (!isDocEmpty()) return                       // project arrived → done
+      const elapsed = performance.now() - t0
+      if (ui.peerCount > 0) {
+        requestState()                                // pull: re-ask peers for the project
+        if (elapsed < HARD_CAP) { setTimeout(tick, 1500); return }
+      } else if (elapsed < ALONE_GIVEUP) {
+        setTimeout(tick, 1500); return
+      }
+      initIfEmpty(DEFAULT_PROJECT)                     // never leave the user on a blank screen
+    }
+    setTimeout(tick, 1500)
   } else {
     initIfEmpty(DEFAULT_PROJECT)
   }
