@@ -263,7 +263,10 @@ export function ChatPanel() {
 
 // ---------------- onboarding ----------------
 export function Onboard() {
-  const [open, setOpen] = useState(() => localStorage.getItem('stg-onboarded') !== '1')
+  // Never onboard when opening a share link — you're JOINING a live session, not
+  // starting fresh. Showing the demo prompt here would invite a collaborator to
+  // overwrite the shared project with the demo.
+  const [open, setOpen] = useState(() => !roomId && localStorage.getItem('stg-onboarded') !== '1')
   const name = useUI(s => s.userName)
   if (!open) return null
   const done = (loadDemoToo: boolean) => {

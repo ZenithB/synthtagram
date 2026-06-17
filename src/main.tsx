@@ -17,9 +17,17 @@ async function boot() {
   maybeTakeCarried()
 
   if (roomId) {
-    // joining someone's room: give their state a moment to arrive before
-    // assuming the room is brand new
-    setTimeout(() => { if (isDocEmpty()) initIfEmpty(DEFAULT_PROJECT) }, 2500)
+    // Joining someone's room: wait for the host's project to arrive over P2P.
+    // Only seed a fresh default if we're genuinely alone (no peer connected) —
+    // otherwise a slow WebRTC handshake would load the demo/default *over* the
+    // incoming shared session and Yjs would merge the two into a mess.
+    const waitForPeer = (ms: number, tries: number) => setTimeout(() => {
+      if (!isDocEmpty()) return            // host's project arrived
+      if (ui.peerCount > 0) { waitForPeer(2000, 0); return } // peer here — keep waiting for state
+      if (tries > 0) { waitForPeer(2500, tries - 1); return } // give the relay handshake more time
+      initIfEmpty(DEFAULT_PROJECT)          // truly alone → start a fresh room
+    }, ms)
+    waitForPeer(3000, 2)
   } else {
     initIfEmpty(DEFAULT_PROJECT)
   }
