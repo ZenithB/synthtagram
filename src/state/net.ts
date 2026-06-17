@@ -107,14 +107,40 @@ export async function startP2P() {
   }
   setUI({ netStatus: 'connecting' })
 
-  // Shared config for every strategy. TURN goes in `turnConfig` (NOT
-  // rtcConfig.iceServers) — Trystero concats it onto its default Google/
-  // Cloudflare STUN. Overriding rtcConfig.iceServers would DROP that STUN.
-  // STUN alone got phone↔laptop working originally; TURN is a bonus for
-  // symmetric-NAT cases and is purely additive (dead TURN just falls back).
-  const config = {
+  // CRITICAL: pin our OWN relay lists. Trystero's built-in defaults have rotted
+  // — its default Nostr relays now whitelist anonymous keys ("not on white-list")
+  // and its default trackers 403/time out. Worse, with no explicit list each peer
+  // connects to a RANDOM subset of the default pool, so two devices can land on
+  // disjoint relays and never share a meeting point even when both "connect".
+  // By pinning an explicit list AND setting redundancy = list length, every peer
+  // joins the SAME relays → guaranteed overlap. Lists are best-effort current;
+  // dead/gatekeeping entries are harmless as long as one shared one survives.
+
+  // Open, anonymous-friendly Nostr relays on :443 (the path that worked originally).
+  const NOSTR_RELAYS = [
+    'wss://nos.lol',
+    'wss://relay.damus.io',
+    'wss://relay.primal.net',
+    'wss://relay.nostr.band',
+    'wss://nostr.mom',
+    'wss://relay.nostr.bg',
+    'wss://nostr-pub.wellorder.net',
+    'wss://relay.snort.social',
+  ]
+  // Public WebTorrent signaling trackers (browser WebRTC), all on :443.
+  const TORRENT_TRACKERS = [
+    'wss://tracker.openwebtorrent.com',
+    'wss://tracker.btorrent.xyz',
+    'wss://tracker.webtorrent.dev',
+    'wss://tracker.files.fm:7073/announce',
+  ]
+
+  // Shared base. TURN goes in `turnConfig` (NOT rtcConfig.iceServers) — Trystero
+  // concats it onto its default Google/Cloudflare STUN. Overriding
+  // rtcConfig.iceServers would DROP that STUN. STUN alone got phone↔laptop
+  // working originally; TURN is a bonus for symmetric-NAT cases, purely additive.
+  const baseConfig = {
     appId: 'synthtagram-v1',
-    relayRedundancy: 5,
     turnConfig: [
       { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
       { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
@@ -126,7 +152,10 @@ export async function startP2P() {
   const applyAware = (u: any) => applyAwarenessUpdate(awareness, new Uint8Array(u), REMOTE)
 
   // Bridge one Trystero room (one signaling strategy) onto the shared doc.
-  const wire = (joinRoom: any, label: string) => {
+  // redundancy = relayUrls.length so EVERY peer joins ALL the pinned relays
+  // (guaranteed overlap), not a random subset.
+  const wire = (joinRoom: any, label: string, relayUrls: string[]) => {
+    const config = { ...baseConfig, relayUrls, relayRedundancy: relayUrls.length }
     let room: any
     try {
       room = joinRoom(config, roomId)
@@ -182,14 +211,14 @@ export async function startP2P() {
   // deliberately — its brokers sit on odd ports (the first thing locked-down
   // networks block), it's the flakiest in practice, and its bundle is ~40x the
   // others, so it was all cost and little coverage.
-  const strategies: [string, () => Promise<any>][] = [
-    ['torrent', () => import('trystero/torrent')],
-    ['nostr', () => import('trystero/nostr')],
+  const strategies: [string, () => Promise<any>, string[]][] = [
+    ['torrent', () => import('trystero/torrent'), TORRENT_TRACKERS],
+    ['nostr', () => import('trystero/nostr'), NOSTR_RELAYS],
   ]
-  await Promise.all(strategies.map(async ([label, imp]) => {
+  await Promise.all(strategies.map(async ([label, imp, relayUrls]) => {
     try {
       const mod = await imp()
-      wire(mod.joinRoom, label)
+      wire(mod.joinRoom, label, relayUrls)
     } catch (e) {
       console.warn('[sf-p2p] strategy unavailable:', label, e)
     }
