@@ -1,35 +1,234 @@
-// Offline WAV export. Rebuilds the whole project graph inside Tone.Offline at
-// the engine's 2x rate (88.2kHz), renders, then resamples to 44.1kHz with the
-// browser's resampler and encodes 16-bit PCM. Master mix or per-track stems.
+// Offline audio export. Rebuilds the WHOLE project graph inside Tone.Offline at
+// the engine's 2x rate (88.2kHz) — mirroring the live signal path so the bounce
+// matches what you hear: instrument → per-device output gains → fx chain →
+// pan → volume → master, plus send/return buses, audio clips, the sampler,
+// live MIDI-fx, sidechain ducking, LFOs and (scene) automation envelopes.
+// Then resamples to 44.1kHz and encodes to WAV or MP3, stereo / mono / stems.
+//
+// Note: Auto-Tune is NOT reproduced offline (its pitch detector needs a live
+// AnalyserNode, which doesn't run in an OfflineAudioContext) — use Record
+// Output for an auto-tuned bounce. Macros are already baked into param values.
 
 import * as Tone from 'tone'
-import { BAR, PPQ, Note } from '../types'
-import { exportProject, arrEndTicks, meta as docMeta, ProjectJSON } from '../state/doc'
-import { makeInstrument, makeEffect } from './devices'
+import { BAR, PPQ, Note, clamp } from '../types'
+import { exportProject, arrEndTicks, meta as docMeta, ProjectJSON, TrackJSON, ClipJSON } from '../state/doc'
+import { makeInstrument, makeEffect, Inst, Fx } from './devices'
+import { instSchema, fxSchema, mixSpec, lfoShapeValue, LFO_DIV_TICKS } from './schema'
+import { applyMidiFx } from './midifx'
+import { getSampleBuffer } from './samples'
+import { resample, encodeAudio, download, extFor, AudioFormat, Channels } from './encode'
 import { toast } from '../state/store'
 
 const RENDER_SR = 88200
-const OUT_SR = 44100
 
 function ticksToSec(ticks: number, bpm: number) {
   return (ticks / PPQ) * (60 / bpm)
 }
 
-type RenderScope =
+export type RenderScope =
   | { kind: 'arr' }
   | { kind: 'loop' }
   | { kind: 'scene'; sceneId: string }
 
+export type ExportOptions = {
+  format: AudioFormat
+  channels: Channels
+  kbps?: number
+  stems?: boolean
+}
+
+// What slice of the project a single render pass should capture.
+type RenderTarget =
+  | { kind: 'mix' }
+  | { kind: 'track'; idx: number }    // one track only, dry (no return tails)
+  | { kind: 'return'; idx: number }   // one return bus, fed by every track's sends
+
+type OffFx = { id: string; type: string; dev: OffDevice; out: Tone.Volume }
+type OffTrack = {
+  json: TrackJSON
+  inst: Inst
+  fx: OffFx[]
+  panner: StereoPannerNode
+  vol: Tone.Volume
+  sendA: Tone.Gain
+  sendB: Tone.Gain
+  loopLen: number
+  envEntries: [string, { t: number; v: number }[]][] | null
+}
+
+// Tone.PluckSynth (Karplus-Strong) throws AbortError inside an OfflineAudioContext,
+// which kills the whole render. Substitute an offline-safe plucky synth so the
+// bounce still completes; Record Output captures the real PluckSynth live.
+function makeOffInstrument(type: string, params: Record<string, number>, buf?: AudioBuffer): Inst {
+  if (type !== 'pluck') return makeInstrument(type, params, buf)
+  const out = new Tone.Gain(0.9)
+  const synth = new Tone.PolySynth(Tone.Synth).connect(out)
+  synth.set({ oscillator: { type: 'triangle' }, envelope: { attack: 0.002, decay: 0.45, sustain: 0, release: 0.4 } })
+  const hz = (pp: number) => Tone.Frequency(pp, 'midi').toFrequency()
+  return {
+    out,
+    set: () => {},
+    noteOn: (pp, vel) => synth.triggerAttack(hz(pp), undefined, vel),
+    noteOff: pp => synth.triggerRelease(hz(pp)),
+    trigger: (pp, dur, time, vel) => synth.triggerAttackRelease(hz(pp), Math.min(dur, 0.6), time, vel),
+    dispose: () => { synth.dispose(); out.dispose() },
+  }
+}
+
+// A device with explicit input/output nodes, so reverb (a composite) and normal
+// single-node effects share one chain-wiring path.
+type OffDevice = { in: Tone.ToneAudioNode; out: Tone.ToneAudioNode; set: (k: string, v: number) => void; tick?: Fx['tick'] }
+
+// Tone.Reverb generates its impulse response with a NESTED Tone.Offline render,
+// which aborts inside our outer offline render. Build reverb as a Convolver fed a
+// synthesized decaying-noise IR + a dry/wet mix instead (no nested rendering).
+function makeOffDevice(type: string, params: Record<string, number>): OffDevice {
+  if (type === 'reverb') {
+    const ctx = Tone.getContext().rawContext as unknown as BaseAudioContext
+    const decay = Math.max(0.1, params.size ?? 2.2)
+    const len = Math.max(1, Math.floor(decay * ctx.sampleRate))
+    const ir = ctx.createBuffer(2, len, ctx.sampleRate)
+    for (let c = 0; c < 2; c++) {
+      const d = ir.getChannelData(c)
+      for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 2.5)
+    }
+    const mix = params.mix ?? 0.3
+    const input = new Tone.Gain()
+    const output = new Tone.Gain()
+    const conv = (ctx as unknown as BaseAudioContext).createConvolver()
+    conv.normalize = true
+    conv.buffer = ir
+    const wet = new Tone.Gain(mix)
+    const dry = new Tone.Gain(1 - mix)
+    input.connect(dry); dry.connect(output)
+    Tone.connect(input, conv); Tone.connect(conv, wet); wet.connect(output)
+    return { in: input, out: output, set: (k, v) => { if (k === 'mix') { wet.gain.value = v; dry.gain.value = 1 - v } } }
+  }
+  const fx = makeEffect(type, params)
+  return { in: fx.node, out: fx.node, set: fx.set, tick: fx.tick }
+}
+
+function envValueAt(pts: { t: number; v: number }[], pos: number, loop: number): number {
+  if (pts.length === 1) return pts[0].v
+  if (pos <= pts[0].t) return pts[0].v
+  const last = pts[pts.length - 1]
+  if (pos >= last.t) return last.v
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i], b = pts[i + 1]
+    if (pos >= a.t && pos <= b.t) return a.v + (b.v - a.v) * ((pos - a.t) / Math.max(1, b.t - a.t))
+  }
+  return last.v
+}
+
+/** Build one track's full signal chain into the current (offline) context. */
+function buildOffTrack(t: TrackJSON, master: Tone.Volume, returnInputs: Tone.ToneAudioNode[], toMaster: boolean): OffTrack {
+  const buf = t.inst.type === 'sampler' ? getSampleBuffer(t.inst.sampleId || '') : undefined
+  const inst = makeOffInstrument(t.inst.type, t.inst.params, buf)
+  const fx: OffFx[] = []
+  t.fx.forEach(f => {
+    if (!f.on) return
+    const dev = makeOffDevice(f.type, f.params)
+    fx.push({ id: f.id || f.type, type: f.type, dev, out: new Tone.Volume(f.out ?? 0) })
+  })
+  const rawCtx = Tone.getContext().rawContext as unknown as BaseAudioContext
+  const panner = rawCtx.createStereoPanner()
+  panner.pan.value = t.pan
+  const vol = new Tone.Volume(t.gain)
+  const instOut = new Tone.Volume(t.inst.out ?? 0)
+  Tone.connect(inst.out, instOut)
+  let prev: Tone.ToneAudioNode = instOut
+  fx.forEach(f => {
+    Tone.connect(prev, f.dev.in)
+    Tone.connect(f.dev.out, f.out)
+    prev = f.out
+  })
+  Tone.connect(prev, panner)
+  Tone.connect(panner, vol)
+  if (toMaster) vol.connect(master)
+  const sendA = new Tone.Gain(t.sendA ?? 0)
+  const sendB = new Tone.Gain(t.sendB ?? 0)
+  if (returnInputs.length) {
+    vol.connect(sendA); vol.connect(sendB)
+    if (returnInputs[0]) sendA.connect(returnInputs[0])
+    if (returnInputs[1]) sendB.connect(returnInputs[1])
+  }
+  return { json: t, inst, fx, panner, vol, sendA, sendB, loopLen: BAR, envEntries: null }
+}
+
+/** Resolve an LFO/automation target to its spec, base value and live setter. */
+function resolveTarget(ot: OffTrack, dest: string, fxId: string, pkey: string) {
+  if (dest === 'inst') {
+    const spec = instSchema(ot.json.inst.type).params.find(s => s.key === pkey)
+    const base = ot.json.inst.params[pkey]
+    if (!spec || typeof base !== 'number') return null
+    return { spec, base, setter: (v: number) => ot.inst.set(pkey, v) }
+  }
+  if (dest === 'mix') {
+    const spec = mixSpec(pkey)
+    const base = pkey === 'gain' ? ot.json.gain : ot.json.pan
+    if (!spec || typeof base !== 'number') return null
+    return { spec, base, setter: (v: number) => { if (pkey === 'gain') ot.vol.volume.value = v; else ot.panner.pan.value = v } }
+  }
+  const fxJson = ot.json.fx.find(f => (f.id || f.type) === fxId)
+  const bf = ot.fx.find(f => f.id === fxId)
+  if (!fxJson || !bf) return null
+  const spec = fxSchema(fxJson.type).params.find(s => s.key === pkey)
+  const base = fxJson.params[pkey]
+  if (!spec || typeof base !== 'number') return null
+  return { spec, base, setter: (v: number) => bf.dev.set(pkey, v) }
+}
+
+/** Per-frame modulation (sidechain tick + LFOs + scene automation), mirrors the live loop. */
+function applyMod(ot: OffTrack, posTicks: number, audioTime: number, bpm: number, withAutomation: boolean) {
+  ot.fx.forEach(f => f.dev.tick?.(posTicks, true, bpm))
+
+  const controlled = new Map<string, { dest: string; fxId: string; pkey: string }>()
+  const autoNorm = new Map<string, number>()
+  const lfoOff = new Map<string, number>()
+
+  if (withAutomation && ot.envEntries) {
+    const loop = ot.loopLen || BAR
+    const pos = (((posTicks) % loop) + loop) % loop
+    for (const [k, pts] of ot.envEntries) {
+      if (!pts.length) continue
+      autoNorm.set(k, envValueAt(pts, pos, loop))
+      const [dest, fxId, pkey] = k.split('|')
+      controlled.set(k, { dest, fxId: fxId || '', pkey })
+    }
+  }
+
+  ot.json.lfos?.forEach(lfo => {
+    const raw = lfoShapeValue(lfo.shape | 0,
+      lfo.sync
+        ? posTicks / (LFO_DIV_TICKS[lfo.rate | 0] || 384) + (lfo.phase ?? 0)
+        : audioTime * (lfo.hz ?? 1) + (lfo.phase ?? 0))
+    if (!lfo.on || !lfo.pkey || !lfo.dest) return
+    const k = `${lfo.dest}|${lfo.fxId || ''}|${lfo.pkey}`
+    lfoOff.set(k, (lfoOff.get(k) ?? 0) + raw * (lfo.depth ?? 0.5))
+    controlled.set(k, { dest: lfo.dest, fxId: lfo.fxId || '', pkey: lfo.pkey })
+  })
+
+  for (const [k, tg] of controlled) {
+    const r = resolveTarget(ot, tg.dest, tg.fxId, tg.pkey)
+    if (!r) continue
+    const base = autoNorm.has(k) ? r.spec.min + autoNorm.get(k)! * (r.spec.max - r.spec.min) : r.base
+    const off = (lfoOff.get(k) ?? 0) * (r.spec.max - r.spec.min) * 0.5
+    r.setter(clamp(base + off, r.spec.min, r.spec.max))
+  }
+}
+
 async function renderBuffer(
   project: ProjectJSON,
   scope: RenderScope,
-  onlyTrackIdx: number | null,
+  target: RenderTarget,
   fromTicks: number,
   lengthTicks: number,
   sceneId?: string,
 ): Promise<AudioBuffer> {
   const bpm = project.meta.bpm
-  const durSec = ticksToSec(lengthTicks, bpm) + 1.2 // reverb/release tail
+  const root = project.meta.root ?? 9
+  const scaleId = project.meta.scale ?? 'minor'
+  const durSec = ticksToSec(lengthTicks, bpm) + 1.5 // reverb/release tail
 
   const rendered = await Tone.Offline(async ({ transport }) => {
     transport.PPQ = PPQ
@@ -37,40 +236,61 @@ async function renderBuffer(
     transport.swing = project.meta.swing
     transport.swingSubdivision = '16n'
 
-    // stereo-preserving master (Tone.Channel downmixes stereo input to mono)
-    const master = new Tone.Volume(0)
+    // stereo-preserving master (Tone.Channel would downmix)
+    const master = new Tone.Volume(project.meta.masterGain ?? 0)
     const limiter = new Tone.Limiter(-1)
     master.chain(limiter, Tone.getDestination())
 
-    const reverbReady: Promise<any>[] = []
-
-    project.tracks.forEach((t, idx) => {
-      if (onlyTrackIdx !== null && idx !== onlyTrackIdx) return
-      if (t.mute && onlyTrackIdx === null) return
-      const inst = makeInstrument(t.inst.type, t.inst.params)
-      const fxNodes: Tone.ToneAudioNode[] = []
-      t.fx.forEach(f => {
-        if (!f.on) return
-        const fx = makeEffect(f.type, f.params)
-        if (f.type === 'reverb') reverbReady.push((fx.node as Tone.Reverb).ready.catch(() => {}))
-        fxNodes.push(fx.node)
+    // return buses (none for a dry track stem; all for the mix; one for a return stem)
+    const returns: { input: Tone.ToneAudioNode }[] = []
+    const wantReturns = target.kind !== 'track'
+    if (wantReturns) {
+      ;(project.returns ?? []).forEach((r, ri) => {
+        if (target.kind === 'return' && ri !== target.idx) { returns.push({ input: new Tone.Gain() }); return }
+        const dev = makeOffDevice(r.fxType, r.params)
+        const channel = new Tone.Volume(r.gain ?? 0)
+        dev.out.connect(channel)
+        channel.connect(master)
+        returns.push({ input: dev.in })
       })
-      // raw StereoPanner preserves stereo (Tone.Panner downmixes stereo input)
-      const rawCtx = Tone.getContext().rawContext as unknown as BaseAudioContext
-      const panner = rawCtx.createStereoPanner()
-      panner.pan.value = t.pan
-      const vol = new Tone.Volume(t.gain)
-      const chainNodes: any[] = [inst.out, ...fxNodes]
-      for (let i = 0; i < chainNodes.length - 1; i++) Tone.connect(chainNodes[i], chainNodes[i + 1])
-      Tone.connect(chainNodes[chainNodes.length - 1], panner)
-      Tone.connect(panner, vol)
-      vol.connect(master)
+    }
+    const returnInputs = returns.map(r => r.input)
 
-      const schedule = (notes: Record<string, Note>, startTicks: number, lenTicks: number, loop: boolean) => {
-        const events = Object.values(notes).map(n => ({ time: `${n.s}i`, ...n }))
+    const offTracks: OffTrack[] = []
+    project.tracks.forEach((t, idx) => {
+      if (target.kind === 'track' && idx !== target.idx) return
+      if (t.mute && target.kind === 'mix') return
+      // tracks feed master directly except on a return stem (where we want only the wet send)
+      const toMaster = target.kind !== 'return'
+      const ot = buildOffTrack(t, master, returnInputs, toMaster)
+      offTracks.push(ot)
+
+      const isDrum = t.kind === 'drum'
+      const midifx = (t.midifx ?? []).map(d => ({ type: d.type, on: d.on, params: d.params }))
+      const tid = t.id ?? t.name
+
+      const scheduleClip = (clip: ClipJSON, startTicks: number, lenTicks: number, loop: boolean) => {
+        if (clip.audio) {
+          const sbuf = getSampleBuffer(clip.audio.sampleId || '')
+          if (!sbuf) return
+          const player = new Tone.Player(sbuf as any)
+          player.loop = !!clip.audio.loop
+          player.playbackRate = Math.pow(2, (clip.audio.pitch ?? 0) / 12)
+          player.reverse = !!clip.audio.rev
+          try { player.fadeIn = Math.max(0, Tone.Ticks(clip.audio.fadeIn ?? 0).toSeconds()) } catch { /* ok */ }
+          try { player.fadeOut = Math.max(0, Tone.Ticks(clip.audio.fadeOut ?? 0).toSeconds()) } catch { /* ok */ }
+          player.volume.value = clip.audio.gainDb ?? 0
+          Tone.connect(player, ot.inst.out)
+          player.sync().start(`${startTicks}i`)
+          if (!loop) player.stop(`${startTicks + lenTicks}i`)
+          return
+        }
+        let notes: Note[] = Object.values(clip.notes).map(n => ({ ...n }))
+        notes = applyMidiFx(midifx, notes, lenTicks, root, scaleId, isDrum)
+        const events = notes.map(n => ({ time: `${n.s}i`, ...n }))
         const part = new Tone.Part((time, ev: any) => {
           if (ev.pr < 1 && Math.random() > ev.pr) return
-          inst.trigger(ev.p, Math.max(0.02, Tone.Ticks(ev.d).toSeconds()), time, ev.v)
+          ot.inst.trigger(ev.p, Math.max(0.02, Tone.Ticks(ev.d).toSeconds()), time, ev.v)
         }, events as any)
         part.loop = loop
         part.loopStart = 0
@@ -80,123 +300,80 @@ async function renderBuffer(
       }
 
       if (scope.kind === 'scene') {
-        const tid = t.id ?? t.name
         const clip = project.clips[`${tid}|${sceneId}`]
-        if (clip) schedule(clip.notes, 0, clip.len, true)
+        if (clip) {
+          ot.loopLen = clip.len
+          if (clip.env) ot.envEntries = Object.entries(clip.env)
+          scheduleClip(clip, 0, clip.len, true)
+        }
       } else {
         Object.values(project.arr).forEach(a => {
-          if (a.trackId !== (t.id ?? t.name)) return
-          // parts loop the clip content natively across its arranged length
-          const events = Object.values(a.notes).map(n => ({ time: `${n.s}i`, ...n }))
-          const part = new Tone.Part((time, ev: any) => {
-            if (ev.pr < 1 && Math.random() > ev.pr) return
-            inst.trigger(ev.p, Math.max(0.02, Tone.Ticks(ev.d).toSeconds()), time, ev.v)
-          }, events as any)
-          part.loop = true
-          part.loopStart = 0
-          part.loopEnd = `${a.len}i`
-          part.start(`${a.start}i`)
-          part.stop(`${a.start + a.len}i`)
+          if (a.trackId !== tid) return
+          scheduleClip(a, a.start, a.len, true)
         })
       }
     })
 
-    await Promise.all(reverbReady)
-    transport.start(0.05, `${fromTicks}i`)
+    // per-frame modulation: sidechain ducking, LFOs, and (scene) automation
+    const withAutomation = scope.kind === 'scene'
+    transport.scheduleRepeat(time => {
+      const posTicks = transport.getTicksAtTime(time)
+      for (const ot of offTracks) applyMod(ot, posTicks, time, bpm, withAutomation)
+    }, '32n', 0)
+
+    transport.start(0.02, `${fromTicks}i`)
   }, durSec, 2, RENDER_SR)
 
   return rendered.get() as AudioBuffer
 }
 
-async function resample(buf: AudioBuffer): Promise<AudioBuffer> {
-  const len = Math.ceil(buf.duration * OUT_SR)
-  const ctx = new OfflineAudioContext(2, len, OUT_SR)
-  const src = ctx.createBufferSource()
-  src.buffer = buf
-  src.connect(ctx.destination)
-  src.start()
-  return ctx.startRendering()
+function fileTitle(project: ProjectJSON) {
+  return project.meta.title.replace(/[^\w\- ]+/g, '') || 'synthtagram'
 }
 
-function encodeWav(buf: AudioBuffer): Blob {
-  const numCh = 2
-  const len = buf.length
-  const bytesPerSample = 2
-  const blockAlign = numCh * bytesPerSample
-  const dataSize = len * blockAlign
-  const ab = new ArrayBuffer(44 + dataSize)
-  const dv = new DataView(ab)
-  const writeStr = (off: number, s: string) => { for (let i = 0; i < s.length; i++) dv.setUint8(off + i, s.charCodeAt(i)) }
-  writeStr(0, 'RIFF')
-  dv.setUint32(4, 36 + dataSize, true)
-  writeStr(8, 'WAVE')
-  writeStr(12, 'fmt ')
-  dv.setUint32(16, 16, true)
-  dv.setUint16(20, 1, true)
-  dv.setUint16(22, numCh, true)
-  dv.setUint32(24, OUT_SR, true)
-  dv.setUint32(28, OUT_SR * blockAlign, true)
-  dv.setUint16(32, blockAlign, true)
-  dv.setUint16(34, 16, true)
-  writeStr(36, 'data')
-  dv.setUint32(40, dataSize, true)
-  const chL = buf.getChannelData(0)
-  const chR = buf.numberOfChannels > 1 ? buf.getChannelData(1) : chL
-  let off = 44
-  for (let i = 0; i < len; i++) {
-    for (const ch of [chL, chR]) {
-      const s = Math.max(-1, Math.min(1, ch[i]))
-      dv.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7fff, true)
-      off += 2
-    }
-  }
-  return new Blob([ab], { type: 'audio/wav' })
-}
-
-function download(blob: Blob, name: string) {
-  const a = document.createElement('a')
-  a.href = URL.createObjectURL(blob)
-  a.download = name
-  a.click()
-  setTimeout(() => URL.revokeObjectURL(a.href), 10000)
-}
-
-export async function exportWav(scope: RenderScope, stems = false) {
-  const project = exportProject()
-  const title = project.meta.title.replace(/[^\w\- ]+/g, '') || 'synthtagram'
+function scopeBounds(project: ProjectJSON, scope: RenderScope): { from: number; ticks: number; sceneId?: string } | null {
   const loopStart = docMeta.get('loopStart') ?? 0
   const loopEnd = docMeta.get('loopEnd') ?? BAR * 4
-
-  let from = 0
-  let ticks = Math.max(BAR, arrEndTicks())
-  let sceneId: string | undefined
-  if (scope.kind === 'loop') { from = loopStart; ticks = Math.max(BAR, loopEnd - loopStart) }
+  if (scope.kind === 'loop') return { from: loopStart, ticks: Math.max(BAR, loopEnd - loopStart) }
   if (scope.kind === 'scene') {
-    sceneId = scope.sceneId
     let longest = BAR
-    for (const [key, c] of Object.entries(project.clips)) if (key.endsWith(`|${sceneId}`)) longest = Math.max(longest, c.len)
-    ticks = longest * 2
+    for (const [key, c] of Object.entries(project.clips)) if (key.endsWith(`|${scope.sceneId}`)) longest = Math.max(longest, c.len)
+    return { from: 0, ticks: longest * 2, sceneId: scope.sceneId }
   }
-  if (scope.kind === 'arr' && ticks <= BAR && Object.keys(project.arr).length === 0) {
-    toast('Arrangement is empty — drag some clips in first')
-    return
-  }
+  const ticks = Math.max(BAR, arrEndTicks())
+  if (ticks <= BAR && Object.keys(project.arr).length === 0) return null
+  return { from: 0, ticks }
+}
 
-  toast(stems ? 'Rendering stems…' : 'Rendering WAV…')
+/** Render + encode + download in the chosen format / channels, optionally as stems. */
+export async function exportAudio(scope: RenderScope, opts: ExportOptions) {
+  const project = exportProject()
+  const title = fileTitle(project)
+  const bounds = scopeBounds(project, scope)
+  if (!bounds) { toast('Arrangement is empty — drag some clips in first'); return }
+  const { from, ticks, sceneId } = bounds
+  const ext = extFor(opts.format)
+  const enc = (buf: AudioBuffer) => encodeAudio(buf, opts.format, opts.channels, opts.kbps)
+
+  toast(opts.stems ? 'Rendering stems…' : `Rendering ${opts.format.toUpperCase()}…`)
   try {
-    if (stems) {
+    if (opts.stems) {
       for (let i = 0; i < project.tracks.length; i++) {
-        const buf = await renderBuffer(project, scope, i, from, ticks, sceneId)
-        const out = await resample(buf)
-        download(encodeWav(out), `${title} - ${project.tracks[i].name}.wav`)
-        await new Promise(r => setTimeout(r, 400))
+        const buf = await renderBuffer(project, scope, { kind: 'track', idx: i }, from, ticks, sceneId)
+        download(enc(await resample(buf)), `${title} - ${project.tracks[i].name}.${ext}`)
+        await new Promise(r => setTimeout(r, 250))
       }
-      toast(`Exported ${project.tracks.length} stems ✓`)
+      // return buses as their own stems so a stem set fully reconstructs the mix
+      for (let r = 0; r < (project.returns?.length ?? 0); r++) {
+        const buf = await renderBuffer(project, scope, { kind: 'return', idx: r }, from, ticks, sceneId)
+        download(enc(await resample(buf)), `${title} - ${project.returns![r].name || `Return ${r + 1}`}.${ext}`)
+        await new Promise(r => setTimeout(r, 250))
+      }
+      toast(`Exported stems ✓`)
     } else {
-      const buf = await renderBuffer(project, scope, null, from, ticks, sceneId)
-      const out = await resample(buf)
-      download(encodeWav(out), `${title}.wav`)
-      toast('Exported WAV ✓')
+      const buf = await renderBuffer(project, scope, { kind: 'mix' }, from, ticks, sceneId)
+      download(enc(await resample(buf)), `${title}.${ext}`)
+      toast(`Exported ${opts.format.toUpperCase()} ✓`)
     }
   } catch (e) {
     console.error(e)

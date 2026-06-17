@@ -17,7 +17,8 @@ No install, no account, no server. Your project autosaves locally; sharing creat
 - **Adjustable workspace** — drag the divider to resize the editor panel, and zoom the whole interface in/out from the top bar (handy on small or huge screens); less-used controls tuck into a tidy overflow menu.
 - **Mixer** — per-track fader, pan, mute, solo, arm, live meters, master limiter.
 - **7 instrument modules** — Analog Poly (with fat/supersaw waves + stereo spread), FM Synth, Mono Bass, Pluck, Dream Keys, Duo Thick (detuned dual-voice with vibrato), and an 8-pad synthesized Drum Kit (no samples — every drum is synthesized live, with per-pad tune/decay/level).
-- **17 effect modules** — EQ3, Filter, tempo-synced Echo & Ping Pong, Reverb, Chorus, Drive, Heat (Chebyshev), Bitcrusher, Compressor, Phaser, Auto Filter, Auto Pan, Tremolo, Vibrato, Stereo Widener, Frequency Shifter. Reorder, bypass, stack freely per track.
+- **18 effect modules** — EQ3, Filter, tempo-synced Echo & Ping Pong, Reverb, Chorus, Drive, Heat (Chebyshev), Bitcrusher, Compressor, Phaser, Auto Filter, Auto Pan, Tremolo, Vibrato, Stereo Widener, Frequency Shifter, and **Auto-Tune** (live pitch correction that snaps to the project key/scale — or chromatic — with adjustable retune speed). Reorder, bypass, stack freely per track.
+- **Per-device metering** — every instrument and effect has its own level meter plus a pre-meter **output knob (−30/+30 dB)** for gain-staging device by device down the chain.
 - **LFOs** (Ableton-style) — add LFOs to any track and map each to any knob (instrument or effect). 7 shapes (sine, triangle, saw up/down, square, sample & hold, random), tempo-synced rate *or* free Hz, depth + phase. The LFO modulates the parameter *around its manual value* and snaps back when unmapped — modulation runs locally per client so it never spams the network, with a deterministic S&H/random so collaborators hear the same wobble.
 - **Automation** — draw parameter envelopes per clip (volume, pan, cutoff, any effect knob) right in the piano roll's bottom lane; they play back layered under any LFO on the same parameter.
 - **Send / Return buses** — two shared return tracks (Reverb + Delay) with per-track A/B send knobs, so the whole mix shares one lush space instead of one reverb per track.
@@ -33,7 +34,8 @@ No install, no account, no server. Your project autosaves locally; sharing creat
 - **Fully stereo signal path** — panning, stereo effects (Ping Pong, Widener, Auto Pan), and stereo samples are preserved end-to-end through tracks, returns, the master and the WAV export.
 - **Sound packs** — a searchable browser with **~50 instrument presets** (supersaw anthems to gamelan bells), **12 drum kits** (808 Boom, Trap 808 Long, Techno Bunker, Garage 2-Step, Ambient Glass…), **40 MIDI loops** across drums/bass/chords/melody/arps (click to audition, drag onto the grid), plus a full demo song.
 - **Chord progression generator** — 16 classic progressions (Axis pop, Doo-Wop, Royal Road, 12-bar blues, Andalusian, jazz ii–V–I, neo-soul vamps…) rendered **into your project's key** on drop, with roman-numeral labels and one-click audition.
-- **Export** — render your arrangement, loop region, or a scene to WAV entirely in the browser; export per-track **stems**; save/import project files.
+- **Export** — render your arrangement, loop region, or a scene to **WAV (16-bit) or MP3 (64/128/256 kbps)**, **stereo or mono**, entirely in the browser. The offline render faithfully mirrors the live signal path — instrument & effect chains, per-device output gains, **send/return buses**, LFOs, sidechain ducking, MIDI-fx and audio clips all bounce exactly as you hear them. Export per-track **stems** (each track + each return bus, so a stem set reconstructs the mix). Save/import project files.
+- **Record Output** — capture a live take of *exactly what you hear* — including knob tweaks, performance, and Auto-Tune — to WAV/MP3, then download. (Two complementary paths: the offline render is instant and deterministic; Record Output captures live modulation in real time.)
 
 ### Collaboration ("Google Docs, but it slaps")
 - One click creates a share link. Everyone with the link edits the **same project in real time** — clips, notes, knobs, everything, with per-note granularity (CRDTs via Yjs, so concurrent edits merge instead of conflicting).
@@ -110,7 +112,7 @@ Every edit goes through a labeled Yjs transaction → it's undoable, it appears 
 
 ## Limitations
 
-- No audio-clip recording or sample import yet (synthesis only). v2 will integrate clip-based audio.
+- **Offline export quirks** (use **Record Output** for an exact bounce of these): **Auto-Tune** isn't reproduced in the offline render — its pitch detector needs a live analyser, which doesn't run in an `OfflineAudioContext`. The **Pluck** instrument renders as a close synth approximation offline (its Karplus-Strong core can't render in `OfflineAudioContext`). Both sound exactly right in Record Output, which captures the live engine.
 - P2P discovery uses public relays; on very locked-down networks peers may not connect (tabs on the same machine always sync).
 - Intended for desktop/laptop usage. Will work on phones and tablets, but not optimised.
 

@@ -11,7 +11,7 @@ import { Modal } from './widgets'
 import { setPresence } from '../state/net'
 import { engine } from '../audio/engine'
 import { loadDemo, newProject, addSynthTrack, addDrumTrack, importProjectFile, applyPreset } from './actions'
-import { exportWav, exportProjectFile } from '../audio/render'
+import { exportAudio, exportProjectFile } from '../audio/render'
 import { captureToClip } from '../audio/input'
 import { addFx } from '../state/doc'
 import { EFFECTS, defaultsFor } from '../audio/schema'
@@ -77,9 +77,9 @@ function buildCommands(): Cmd[] {
     { title: 'Toggle theme (light/dark)', run: () => setUI({ theme: ui.theme === 'dark' ? 'light' : 'dark' }) },
     { title: 'Load demo song', run: loadDemo },
     { title: 'New project', run: newProject },
-    { title: 'Export WAV — arrangement', run: () => exportWav({ kind: 'arr' }) },
-    { title: 'Export WAV — loop region', run: () => exportWav({ kind: 'loop' }) },
-    { title: 'Export stems', run: () => exportWav({ kind: 'arr' }, true) },
+    { title: 'Export WAV — arrangement', run: () => exportAudio({ kind: 'arr' }, { format: 'wav', channels: 'stereo' }) },
+    { title: 'Export WAV — loop region', run: () => exportAudio({ kind: 'loop' }, { format: 'wav', channels: 'stereo' }) },
+    { title: 'Export stems (WAV)', run: () => exportAudio({ kind: 'arr' }, { format: 'wav', channels: 'stereo', stems: true }) },
     { title: 'Save project file', run: exportProjectFile },
     { title: 'Import project file', run: importProjectFile },
     { title: 'Help & shortcuts', hint: '?', run: () => setUI({ helpOpen: true }) },

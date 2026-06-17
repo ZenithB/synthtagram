@@ -14,9 +14,9 @@ import {
   isAudioClip,
 } from '../state/doc'
 import { makeInstrument, makeEffect, Inst, Fx } from './devices'
-import { instSchema, fxSchema, lfoShapeValue, LFO_DIV_TICKS, mixSpec, midiFxSchema, ARP_DIV_TICKS } from './schema'
+import { instSchema, fxSchema, lfoShapeValue, LFO_DIV_TICKS, mixSpec, midiFxSchema } from './schema'
 import { getSampleBuffer, onSampleReady } from './samples'
-import { snapToScale } from '../theory'
+import { applyMidiFx as applyMidiFxData } from './midifx'
 import { setUI, toast, ui } from '../state/store'
 
 const STOP = '__stop__'
@@ -51,6 +51,8 @@ class Engine {
   mode: 'session' | 'arr' = 'session'
   built = new Map<string, BuiltTrack>()
   master!: Tone.Volume
+  limiter!: Tone.Limiter
+  captureTap!: Tone.Gain // post-limiter tap for "Record Output" (exactly what's heard)
   masterMeter!: Tone.Meter
   arrParts: Array<Tone.Part | Tone.Player> = []
   arrSeekTicks = 0
@@ -144,11 +146,14 @@ class Engine {
     // Tone.Channel downmixes stereo input to mono (its PanVol has a 1-channel
     // input); use a plain stereo-preserving Volume for the master & returns.
     this.master = new Tone.Volume(meta.get('masterGain') ?? 0)
-    const limiter = new Tone.Limiter(-1)
+    this.limiter = new Tone.Limiter(-1)
     this.masterMeter = new Tone.Meter({ smoothing: 0.85 })
     this.masterFFT = new Tone.Analyser('fft', 1024)
     this.masterWave = new Tone.Analyser('waveform', 1024)
-    this.master.chain(limiter, Tone.getDestination())
+    this.master.chain(this.limiter, Tone.getDestination())
+    // post-limiter tap for live capture — equals the audible output
+    this.captureTap = new Tone.Gain(1)
+    this.limiter.connect(this.captureTap)
     this.master.connect(this.masterMeter)
     this.master.connect(this.masterFFT)
     this.master.connect(this.masterWave)
@@ -669,65 +674,8 @@ class Engine {
   private applyMidiFx(t: Y.Map<any>, notes: Note[], loopLen: number): Note[] {
     const chain = midifxOf(t)
     if (!chain || chain.length === 0) return notes
-    const isDrum = t.get('kind') === 'drum'
-    const root = meta.get('root') ?? 9
-    const scaleId = meta.get('scale') ?? 'minor'
-    let out = notes
-    chain.forEach(d => {
-      if (!d.get('on')) return
-      const type = d.get('type')
-      const p = (d.get('params') as Y.Map<number>)
-      if (type === 'scale' && !isDrum) {
-        out = out.map(n => ({ ...n, p: snapToScale(n.p, root, scaleId) }))
-      } else if (type === 'chord' && !isDrum) {
-        const ivs = [0, p.get('i1') ?? 0, p.get('i2') ?? 0, p.get('i3') ?? 0].filter((v, i) => i === 0 || v !== 0)
-        const next: Note[] = []
-        out.forEach(n => ivs.forEach(iv => next.push({ ...n, p: clamp(n.p + iv, 0, 127), v: iv === 0 ? n.v : n.v * 0.85 })))
-        out = next
-      } else if (type === 'velo') {
-        const s = p.get('scale') ?? 1, r = p.get('rand') ?? 0
-        out = out.map(n => ({ ...n, v: clamp(n.v * s + (Math.random() * 2 - 1) * r, 0.05, 1) }))
-      } else if (type === 'rand') {
-        const ch = p.get('chance') ?? 1, oc = p.get('octave') ?? 0
-        out = out.flatMap(n => {
-          if (ch < 1 && Math.random() > ch) return []
-          let pitch = n.p
-          if (oc > 0 && Math.random() < oc) pitch = clamp(pitch + (Math.random() < 0.5 ? 12 : -12), 0, 127)
-          return [{ ...n, p: pitch }]
-        })
-      } else if (type === 'arp' && !isDrum) {
-        out = this.arpExpand(out, p, loopLen)
-      }
-    })
-    return out
-  }
-
-  private arpExpand(notes: Note[], p: Y.Map<number>, loopLen: number): Note[] {
-    if (notes.length === 0) return notes
-    const step = ARP_DIV_TICKS[Math.max(0, Math.min(ARP_DIV_TICKS.length - 1, (p.get('rate') ?? 0) | 0))] || 48
-    const mode = (p.get('mode') ?? 0) | 0
-    const oct = Math.max(1, p.get('oct') ?? 1)
-    const gate = p.get('gate') ?? 0.8
-    // group notes that start together (a chord)
-    const groups = new Map<number, Note[]>()
-    notes.forEach(n => { const g = groups.get(n.s) ?? []; g.push(n); groups.set(n.s, g) })
-    const out: Note[] = []
-    groups.forEach(g => {
-      const end = Math.max(...g.map(n => n.s + n.d))
-      let seq = [...new Set(g.map(n => n.p))].sort((a, b) => a - b)
-      const ext: number[] = []
-      for (let o = 0; o < oct; o++) seq.forEach(pp => ext.push(pp + o * 12))
-      seq = ext
-      if (mode === 1) seq = seq.reverse()
-      else if (mode === 2 && seq.length > 2) seq = [...seq, ...seq.slice(1, -1).reverse()]
-      let i = 0
-      for (let t = g[0].s; t < end; t += step) {
-        const pitch = mode === 3 ? seq[Math.floor(Math.random() * seq.length)] : seq[i % seq.length]
-        out.push({ p: clamp(pitch, 0, 127), s: t, d: Math.max(6, step * gate), v: g[0].v, pr: g[0].pr })
-        i++
-      }
-    })
-    return out
+    const data = chain.map(d => ({ type: d.get('type') as string, on: !!d.get('on'), params: (d.get('params') as Y.Map<number>).toJSON() }))
+    return applyMidiFxData(data, notes, loopLen, (meta.get('root') ?? 9) as number, (meta.get('scale') ?? 'minor') as string, t.get('kind') === 'drum')
   }
 
   private makePart(rec: BuiltTrack, clipMap: Y.Map<any>): Tone.Part {

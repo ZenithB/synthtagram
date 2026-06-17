@@ -10,8 +10,7 @@ import { useY, useRaf } from './hooks'
 import { NumberDrag, Knob, openMenu } from './widgets'
 import { Icon } from './icons'
 import { NOTE_NAMES, SCALES } from '../theory'
-import { exportWav, exportProjectFile } from '../audio/render'
-import { importProjectFile } from './actions'
+import { ExportDialog } from './ExportDialog'
 import { captureToClip, setKbdEnabled, isKbdEnabled } from '../audio/input'
 import { peersList, subscribeAwareness, awarenessVersion } from '../state/net'
 import { ticksToBBS } from '../types'
@@ -86,18 +85,7 @@ export function Topbar() {
     }
   }
 
-  const exportMenu = (e: React.MouseEvent) => {
-    const sceneId = ui.selClip?.kind === 'session' ? ui.selClip.sceneId : null
-    openMenu(e, [
-      { label: <><Icon name="download" /> Export WAV — arrangement</>, fn: () => exportWav({ kind: 'arr' }) },
-      { label: <><Icon name="loop" /> Export WAV — loop region</>, fn: () => exportWav({ kind: 'loop' }) },
-      { label: <><Icon name="play" /> Export WAV — selected scene (2 loops)</>, fn: () => sceneId ? exportWav({ kind: 'scene', sceneId }) : void 0, disabled: !sceneId },
-      { label: <><Icon name="chord" /> Export stems — one WAV per track</>, fn: () => exportWav({ kind: 'arr' }, true) },
-      'sep',
-      { label: <><Icon name="save" /> Save project file</>, fn: exportProjectFile },
-      { label: <><Icon name="folder" /> Import project file</>, fn: importProjectFile },
-    ])
-  }
+  const [exportOpen, setExportOpen] = useState(false)
 
   return (
     <div className="topbar">
@@ -163,7 +151,7 @@ export function Topbar() {
       <div className="tgroup">
         <button className="icon-btn" data-info="Undo your last edit (Ctrl/Cmd+Z) — only undoes YOUR changes" onClick={() => undoMgr.undo()}><Icon name="undo" /></button>
         <button className="icon-btn" data-info="Redo (Ctrl/Cmd+Shift+Z)" onClick={() => undoMgr.redo()}><Icon name="redo" /></button>
-        <button className="icon-btn" data-info="Export audio & project" onClick={exportMenu}><Icon name="download" /></button>
+        <button className="icon-btn" data-info="Export audio & project" onClick={() => setExportOpen(true)}><Icon name="download" /></button>
         <button className="icon-btn" data-info="More: history, palette, keyboard piano, theme, help" onClick={moreMenu}><Icon name="more" /></button>
       </div>
 
@@ -176,6 +164,8 @@ export function Topbar() {
           <Icon name="chat" />{chatUnread > 0 && <span className="badge">{chatUnread}</span>}
         </button>
       </div>
+
+      {exportOpen && <ExportDialog onClose={() => setExportOpen(false)} />}
     </div>
   )
 }
