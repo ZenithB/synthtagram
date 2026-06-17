@@ -91,27 +91,24 @@ export async function startP2P() {
   }
   setUI({ netStatus: 'connecting' })
   try {
-    const trystero = await import('trystero')
+    // Use the MQTT strategy, NOT the default Nostr one. Public Nostr relays now
+    // reject Trystero's anonymous ephemeral keys ("not in our web of trust") and
+    // are frequently overloaded (503), so peers never discover each other. Public
+    // MQTT brokers are built for anonymous pub/sub and are far more reliable.
+    const trystero = await import('trystero/mqtt')
     const { joinRoom } = trystero
     const getRelaySockets = (trystero as any).getRelaySockets as (() => Record<string, WebSocket>) | undefined
     // Trystero only ships STUN by default, so two devices on different networks
-    // discover each other via the relays but can't open a direct WebRTC channel
+    // discover each other via the brokers but can't open a direct WebRTC channel
     // (state never transfers). Add public TURN relays so connections traverse NAT.
     const room = joinRoom({
       appId: 'synthtagram-v1',
-      // Trystero's built-in relay list is largely dead in 0.21.x (most fail to
-      // connect), so peer discovery is fragile. Pin well-known, reliable public
-      // Nostr relays and connect to all of them so two peers always share one.
       relayUrls: [
-        'wss://relay.damus.io',
-        'wss://nos.lol',
-        'wss://relay.nostr.band',
-        'wss://relay.primal.net',
-        'wss://offchain.pub',
-        'wss://nostr.mom',
-        'wss://relay.snort.social',
+        'wss://broker.emqx.io:8084/mqtt',
+        'wss://broker.hivemq.com:8884/mqtt',
+        'wss://test.mosquitto.org:8081/mqtt',
       ],
-      relayRedundancy: 7,
+      relayRedundancy: 3,
       rtcConfig: {
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
