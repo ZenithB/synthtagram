@@ -35,6 +35,8 @@ export type UIState = {
   velo: number
   infoText: string
   audioReady: boolean
+  audioError: string | null
+  midi: 'unsupported' | 'available' | 'on'
   peerCount: number
   netStatus: 'local' | 'connecting' | 'online'
   chatUnread: number
@@ -76,6 +78,8 @@ export const ui: UIState = {
   velo: 0.85,
   infoText: '',
   audioReady: false,
+  audioError: null,
+  midi: 'unsupported',
   peerCount: 0,
   netStatus: 'local',
   chatUnread: 0,

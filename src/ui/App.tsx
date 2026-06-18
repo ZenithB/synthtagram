@@ -8,7 +8,7 @@ import { ArrangementView } from './ArrangementView'
 import { PianoRoll } from './PianoRoll'
 import { AudioEditor } from './AudioEditor'
 import { DeviceRack } from './DeviceRack'
-import { Toasts, UndoPanel, CommandPalette, ShareDialog, HelpModal, ChatPanel, Onboard, StatusBar } from './panels'
+import { Toasts, UndoPanel, CommandPalette, ShareDialog, HelpModal, ChatPanel, Onboard, StatusBar, AudioErrorBanner } from './panels'
 import { ContextMenuHost } from './widgets'
 import { setUI, ui, useUI } from '../state/store'
 import { engine } from '../audio/engine'
@@ -156,6 +156,7 @@ export function App() {
   return (
     <div className="app">
       <Topbar />
+      <AudioErrorBanner />
       <div className="main">
         <Browser />
         <div className="center">

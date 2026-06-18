@@ -114,6 +114,7 @@ Every edit goes through a labeled Yjs transaction → it's undoable, it appears 
 
 - **Offline export quirks** (use **Record Output** for an exact bounce of these): **Auto-Tune** isn't reproduced in the offline render — its pitch detector needs a live analyser, which doesn't run in an `OfflineAudioContext`. The **Pluck** instrument renders as a close synth approximation offline (its Karplus-Strong core can't render in `OfflineAudioContext`). Both sound exactly right in Record Output, which captures the live engine.
 - P2P discovery uses public relays; on very locked-down networks peers may not connect (tabs on the same machine always sync).
+- **MIDI controllers need Chrome or Edge.** The Web MIDI API only exists in Chromium browsers, so a hardware controller won't be detected in Safari or Firefox — but *audio and everything else work in every modern browser* (Safari 15+, Firefox included); MIDI is not required for sound. To avoid a surprise permission prompt, the app never asks for MIDI access on load — click **Enable MIDI** in the status bar to opt in (after that it reconnects silently). If the audio engine ever fails to start, a banner says so with a Retry.
 - Intended for desktop/laptop usage. Will work on phones and tablets, but not optimised.
 
 ---

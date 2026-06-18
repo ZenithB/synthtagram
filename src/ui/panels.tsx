@@ -12,7 +12,7 @@ import { setPresence } from '../state/net'
 import { engine } from '../audio/engine'
 import { loadDemo, newProject, addSynthTrack, addDrumTrack, importProjectFile, applyPreset } from './actions'
 import { exportAudio, exportProjectFile } from '../audio/render'
-import { captureToClip } from '../audio/input'
+import { captureToClip, enableMidi } from '../audio/input'
 import { addFx } from '../state/doc'
 import { EFFECTS, defaultsFor } from '../audio/schema'
 import { INST_PRESETS } from '../packs'
@@ -24,6 +24,20 @@ export function Toasts() {
   return (
     <div className="toasts">
       {toasts.map(t => <div key={t.id} className="toast">{t.text}</div>)}
+    </div>
+  )
+}
+
+// ---------------- audio-failure banner (persistent, must be acted on) ----------------
+export function AudioErrorBanner() {
+  const err = useUI(s => s.audioError)
+  if (!err) return null
+  return (
+    <div className="audio-error" role="alert">
+      <i className="dot warn" />
+      <span className="audio-error-msg">{err}</span>
+      <button className="audio-error-retry" onClick={() => { setUI({ audioError: null }); engine.ensureStarted() }}>Retry</button>
+      <button className="audio-error-x" onClick={() => setUI({ audioError: null })} aria-label="Dismiss">×</button>
     </div>
   )
 }
@@ -303,6 +317,8 @@ export function StatusBar() {
   const status = useUI(s => s.netStatus)
   const peers = useUI(s => s.peerCount)
   const audioReady = useUI(s => s.audioReady)
+  const audioError = useUI(s => s.audioError)
+  const midi = useUI(s => s.midi)
   const octave = useUI(s => s.octave)
   const velo = useUI(s => s.velo)
   const recording = useUI(s => s.recording)
@@ -312,9 +328,13 @@ export function StatusBar() {
       <span className="status-right">
         {recording && <span className="status-pill rec"><i className="dot rec" />REC</span>}
         <span className="status-pill" data-info="Computer-keyboard octave (Z/X) and velocity (C/V)">Oct {octave} · Vel {Math.round(velo * 100)}</span>
-        {audioReady
-          ? <span className="status-pill ok" data-info="Audio engine runs at 2x oversampling for alias-free FM & distortion">{Math.round((engine.sampleRate || 0) / 100) / 10} kHz · 2x</span>
-          : <span className="status-pill warn"><i className="dot warn" />click anywhere to enable audio</span>}
+        {midi === 'available' && <button className="status-pill midi-btn" onClick={() => enableMidi()} data-info="Connect a MIDI controller (asks the browser for permission)">Enable MIDI</button>}
+        {midi === 'on' && <span className="status-pill ok" data-info="MIDI controller input is active">MIDI ✓</span>}
+        {audioError
+          ? <span className="status-pill warn" data-info="The audio engine failed to start — see the banner at the top">⚠ audio failed</span>
+          : audioReady
+            ? <span className="status-pill ok" data-info="Audio engine runs at 2x oversampling for alias-free FM & distortion">{Math.round((engine.sampleRate || 0) / 100) / 10} kHz · 2x</span>
+            : <span className="status-pill warn"><i className="dot warn" />click anywhere to enable audio</span>}
         <span className={`status-pill net-${status}`} data-info="Local: just you (autosaved). Online: synced with friends via P2P">
           {status === 'local' ? <><i className="dot" />Local project</> : status === 'connecting' ? <><i className="dot warn" />Looking for peers…</> : <><i className="dot ok" />Online · {peers}</>}
         </span>

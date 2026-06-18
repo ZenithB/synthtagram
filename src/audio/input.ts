@@ -91,26 +91,66 @@ export function initKeyboardPiano() {
   })
 }
 
+// Wire every input port (and hot-plugged ones) to feed notes into the engine,
+// and reflect "MIDI is live" in the UI.
+function wireMidiAccess(access: any) {
+  const hook = (input: any) => {
+    input.onmidimessage = (msg: any) => {
+      const [status, d1, d2] = msg.data
+      const cmd = status & 0xf0
+      const tid = targetTrackId()
+      const pitch = tid && isDrumTrack(tid) ? clamp(d1 - 36, 0, 7) : d1
+      if (cmd === 0x90 && d2 > 0) noteOn(pitch, d2 / 127)
+      else if (cmd === 0x80 || (cmd === 0x90 && d2 === 0)) noteOff(pitch)
+    }
+  }
+  access.inputs.forEach(hook)
+  access.onstatechange = (e: any) => {
+    if (e.port.type === 'input' && e.port.state === 'connected') hook(e.port)
+  }
+  setUI({ midi: 'on' })
+}
+
+// Actually call requestMIDIAccess(). On Chrome/Edge this is what triggers the
+// browser's MIDI permission prompt — so we only call it when permission was
+// ALREADY granted (silent), or when the user explicitly opts in (interactive).
+async function requestAndWire(interactive: boolean): Promise<boolean> {
+  const nav = navigator as any
+  try {
+    const access = await nav.requestMIDIAccess()
+    wireMidiAccess(access)
+    if (access.inputs.size > 0) toast('MIDI controller connected')
+    else if (interactive) toast('MIDI enabled — plug in a controller to play')
+    return true
+  } catch {
+    if (interactive) toast('Couldn’t enable MIDI access')
+    return false
+  }
+}
+
+// Boot path: NEVER pop the permission prompt on load. Web MIDI can't enumerate
+// devices without permission, so "only prompt when a controller is present" is
+// impossible up front — instead we auto-connect silently if the user already
+// granted MIDI before, and otherwise expose an explicit "Enable MIDI" control
+// (see StatusBar) so the prompt only ever appears on a deliberate click.
 export function initWebMidi() {
   const nav = navigator as any
-  if (!nav.requestMIDIAccess) return
-  nav.requestMIDIAccess().then((access: any) => {
-    const hook = (input: any) => {
-      input.onmidimessage = (msg: any) => {
-        const [status, d1, d2] = msg.data
-        const cmd = status & 0xf0
-        const tid = targetTrackId()
-        const pitch = tid && isDrumTrack(tid) ? clamp(d1 - 36, 0, 7) : d1
-        if (cmd === 0x90 && d2 > 0) noteOn(pitch, d2 / 127)
-        else if (cmd === 0x80 || (cmd === 0x90 && d2 === 0)) noteOff(pitch)
-      }
-    }
-    access.inputs.forEach(hook)
-    access.onstatechange = (e: any) => {
-      if (e.port.type === 'input' && e.port.state === 'connected') hook(e.port)
-    }
-    if (access.inputs.size > 0) toast('MIDI controller connected')
-  }).catch(() => { /* midi optional */ })
+  if (!nav.requestMIDIAccess) { setUI({ midi: 'unsupported' }); return }  // Safari/Firefox
+  setUI({ midi: 'available' })
+  try {
+    nav.permissions?.query({ name: 'midi' } as any).then((st: any) => {
+      if (st.state === 'granted') requestAndWire(false)   // returning user → silent, no prompt
+      // If they grant it later (via Enable MIDI), wire up without another reload.
+      st.onchange = () => { if (st.state === 'granted') requestAndWire(false) }
+    }).catch(() => { /* Permissions API can't query 'midi' here — wait for opt-in */ })
+  } catch { /* no Permissions API — wait for opt-in */ }
+}
+
+// User-initiated opt-in (the only place a permission prompt is acceptable).
+export async function enableMidi() {
+  const nav = navigator as any
+  if (!nav.requestMIDIAccess) { toast('Web MIDI isn’t supported in this browser — try Chrome or Edge'); return }
+  await requestAndWire(true)
 }
 
 /**

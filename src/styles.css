@@ -372,6 +372,33 @@ button { cursor: pointer; background: none; border: none; }
 .toast { background: var(--bg3); border: 1px solid var(--border); box-shadow: var(--shadow); border-radius: 8px; padding: 8px 14px; animation: toast-in 0.18s ease-out; }
 @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } }
 
+/* audio-engine failure banner — persistent, top-center, must be acted on */
+.audio-error {
+  position: fixed; top: 8px; left: 50%; transform: translateX(-50%);
+  z-index: 300; display: flex; align-items: center; gap: 10px;
+  width: min(680px, calc(100vw - 24px));
+  background: color-mix(in srgb, var(--danger) 26%, var(--bg1));
+  border: 1px solid color-mix(in srgb, var(--danger) 70%, var(--border));
+  color: var(--text); border-radius: 9px; padding: 9px 12px;
+  box-shadow: var(--shadow); font-size: 12.5px; animation: toast-in 0.18s ease-out;
+}
+.audio-error .dot.warn { background: var(--danger); }
+.audio-error-msg { flex: 1; line-height: 1.35; }
+.audio-error-retry {
+  flex-shrink: 0; background: var(--accent); color: var(--on-accent); font-family: inherit;
+  border: none; border-radius: 6px; padding: 5px 12px; font-weight: 700; cursor: pointer;
+}
+.audio-error-retry:hover { background: var(--accent-strong); }
+.audio-error-x {
+  flex-shrink: 0; background: transparent; border: none; color: var(--dim);
+  font-size: 17px; line-height: 1; cursor: pointer; padding: 0 2px;
+}
+.audio-error-x:hover { color: var(--text); }
+
+/* "Enable MIDI" status-bar opt-in (a button, so reset native chrome) */
+.midi-btn { border: 1px solid var(--border); cursor: pointer; font-family: inherit; }
+.midi-btn:hover { color: var(--accent); border-color: var(--accent); }
+
 .modal-backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.55); z-index: 100; display: flex; align-items: center; justify-content: center; }
 .modal { background: var(--bg1); border: 1px solid var(--border); border-radius: 11px; box-shadow: var(--shadow); max-height: 84vh; display: flex; flex-direction: column; }
 .modal-head { display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; border-bottom: 1px solid var(--border); font-weight: 700; }

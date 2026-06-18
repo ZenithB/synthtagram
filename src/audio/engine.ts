@@ -102,7 +102,9 @@ class Engine {
     if (!this.startPromise) {
       this.startPromise = this.doStart().catch(e => {
         console.error('audio init failed', e)
-        toast('Could not start audio — click Play to retry')
+        // Persistent, visible failure (not just a transient toast) — a dead audio
+        // engine is the kind of thing a user must actually see, with a way to act.
+        setUI({ audioError: 'Audio engine couldn’t start. Click Retry — if it keeps failing, your browser may not be supported (use the latest Chrome, Edge, Firefox, or Safari 15+).' })
         this.startPromise = null
       })
     }
@@ -135,6 +137,11 @@ class Engine {
       raw = Tone.getContext().rawContext as AudioContext
       if (raw.state !== 'running') { try { await raw.resume() } catch {} }
     }
+    // If the context STILL won't run after every fallback, this is a real failure
+    // (unsupported browser, or autoplay lock). Throw so ensureStarted surfaces the
+    // banner and leaves `started` false — a later Retry/gesture re-attempts cleanly
+    // instead of the engine silently building a graph onto a dead context.
+    if (raw.state !== 'running') throw new Error(`AudioContext stuck in "${raw.state}"`)
     this.sampleRate = Tone.getContext().sampleRate
 
     const t = this.transport
@@ -188,7 +195,7 @@ class Engine {
     meta.observe(this.onMeta)
     this.startModLoop()
     this.started = true
-    setUI({ audioReady: true })
+    setUI({ audioReady: true, audioError: null })
     this.emit()
   }
 
