@@ -59,6 +59,16 @@ export type Fx = {
 
 const midiHz = (p: number) => Tone.Frequency(p, 'midi').toFrequency()
 
+// Timestamp for notes the player triggers LIVE (MIDI/keyboard), right now.
+// Tone's default ~100ms context `lookAhead` keeps *sequenced* clips jitter-free,
+// but for a live keypress it's pure latency — there's no sequence to stay in sync
+// with. So we schedule live notes a hair (5ms) ahead of the raw audio clock via
+// `immediate()` (which excludes lookAhead) instead of `now()` (which adds it),
+// taking key→sound from ~100ms down to roughly buffer-bound. The small 5ms margin
+// avoids the "scheduled in the past" edge case while staying imperceptible.
+// The scheduled `trigger()` path (clip playback) keeps its exact time untouched.
+const liveTime = () => Tone.immediate() + 0.005
+
 // ---------------- instruments ----------------
 
 function makePoly(p: Record<string, number>): Inst {
@@ -85,8 +95,8 @@ function makePoly(p: Record<string, number>): Inst {
       else if (k === 'res') filt.Q.value = v
       else synth.set({ envelope: { [k]: v } } as any)
     },
-    noteOn: (pp, vel) => synth.triggerAttack(midiHz(pp), undefined, vel),
-    noteOff: pp => synth.triggerRelease(midiHz(pp)),
+    noteOn: (pp, vel) => synth.triggerAttack(midiHz(pp), liveTime(), vel),
+    noteOff: pp => synth.triggerRelease(midiHz(pp), liveTime()),
     trigger: (pp, dur, time, vel) => synth.triggerAttackRelease(midiHz(pp), dur, time, vel),
     dispose: () => { synth.dispose(); filt.dispose() },
   }
@@ -109,8 +119,8 @@ function makeDuo(p: Record<string, number>): Inst {
       else if (k === 'vibRate') synth.set({ vibratoRate: v } as any)
       else synth.set({ voice0: { envelope: { [k]: v } }, voice1: { envelope: { [k]: v } } } as any)
     },
-    noteOn: (pp, vel) => (synth as any).triggerAttack(midiHz(pp), undefined, vel),
-    noteOff: pp => (synth as any).triggerRelease(midiHz(pp)),
+    noteOn: (pp, vel) => (synth as any).triggerAttack(midiHz(pp), liveTime(), vel),
+    noteOff: pp => (synth as any).triggerRelease(midiHz(pp), liveTime()),
     trigger: (pp, dur, time, vel) => (synth as any).triggerAttackRelease(midiHz(pp), dur, time, vel),
     dispose: () => synth.dispose(),
   }
@@ -131,8 +141,8 @@ function makeFm(p: Record<string, number>): Inst {
       else if (k === 'modIdx') synth.set({ modulationIndex: v } as any)
       else synth.set({ envelope: { [k]: v } } as any)
     },
-    noteOn: (pp, vel) => synth.triggerAttack(midiHz(pp), undefined, vel),
-    noteOff: pp => synth.triggerRelease(midiHz(pp)),
+    noteOn: (pp, vel) => synth.triggerAttack(midiHz(pp), liveTime(), vel),
+    noteOff: pp => synth.triggerRelease(midiHz(pp), liveTime()),
     trigger: (pp, dur, time, vel) => synth.triggerAttackRelease(midiHz(pp), dur, time, vel),
     dispose: () => synth.dispose(),
   }
@@ -156,8 +166,8 @@ function makeMono(p: Record<string, number>): Inst {
       else if (k === 'glide') synth.portamento = v
       else synth.set({ envelope: { [k]: v } } as any)
     },
-    noteOn: (pp, vel) => synth.triggerAttack(midiHz(pp), undefined, vel),
-    noteOff: () => synth.triggerRelease(),
+    noteOn: (pp, vel) => synth.triggerAttack(midiHz(pp), liveTime(), vel),
+    noteOff: () => synth.triggerRelease(liveTime()),
     trigger: (pp, dur, time, vel) => synth.triggerAttackRelease(midiHz(pp), dur, time, vel),
     dispose: () => synth.dispose(),
   }
@@ -175,7 +185,7 @@ function makePluck(p: Record<string, number>): Inst {
       if (k === 'dampen') (s as any).dampening = v
       else if (k === 'res') s.resonance = v as any
     }),
-    noteOn: (pp, vel) => next().triggerAttack(midiHz(pp), undefined as any),
+    noteOn: (pp, vel) => next().triggerAttack(midiHz(pp), liveTime()),
     noteOff: () => {},
     trigger: (pp, _dur, time, _vel) => next().triggerAttack(midiHz(pp), time),
     dispose: () => { pool.forEach(s => s.dispose()); out.dispose() },
@@ -195,8 +205,8 @@ function makeKeys(p: Record<string, number>): Inst {
       if (k === 'harm') synth.set({ harmonicity: v } as any)
       else synth.set({ envelope: { [k]: v } } as any)
     },
-    noteOn: (pp, vel) => synth.triggerAttack(midiHz(pp), undefined, vel),
-    noteOff: pp => synth.triggerRelease(midiHz(pp)),
+    noteOn: (pp, vel) => synth.triggerAttack(midiHz(pp), liveTime(), vel),
+    noteOff: pp => synth.triggerRelease(midiHz(pp), liveTime()),
     trigger: (pp, dur, time, vel) => synth.triggerAttackRelease(midiHz(pp), dur, time, vel),
     dispose: () => synth.dispose(),
   }
@@ -304,7 +314,7 @@ function makeDrum(p: Record<string, number>): Inst {
       const m = k.match(/^p(\d)_(tune|decay|level)$/)
       if (m) pads[+m[1]]?.set(m[2] as any, v)
     },
-    noteOn: (pp, vel) => pads[pp % pads.length]?.trig(Tone.now(), vel),
+    noteOn: (pp, vel) => pads[pp % pads.length]?.trig(liveTime(), vel),
     noteOff: () => {},
     trigger: (pp, _dur, time, vel) => pads[pp % pads.length]?.trig(time, vel),
     dispose: () => { pads.forEach(pad => pad.dispose()); mix.dispose() },
@@ -331,8 +341,8 @@ function makeSampler(p: Record<string, number>, buffer?: AudioBuffer): Inst {
       else if (k === 'attack') sampler.attack = v
       else if (k === 'release') sampler.release = v
     },
-    noteOn: (pp, vel) => sampler.triggerAttack(hz(pp), undefined, vel),
-    noteOff: pp => sampler.triggerRelease(hz(pp)),
+    noteOn: (pp, vel) => sampler.triggerAttack(hz(pp), liveTime(), vel),
+    noteOff: pp => sampler.triggerRelease(hz(pp), liveTime()),
     trigger: (pp, dur, time, vel) => sampler.triggerAttackRelease(hz(pp), dur, time, vel),
     dispose: () => { sampler.dispose(); out.dispose() },
   }

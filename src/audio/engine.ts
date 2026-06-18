@@ -1115,6 +1115,18 @@ class Engine {
     this.built.get(trackId)?.inst.noteOff(p)
   }
 
+  /**
+   * Rough output latency in ms: the audio render buffer (`baseLatency`) plus the
+   * device/OS output buffer (`outputLatency`). This is the floor a live note
+   * can't beat — what's left after we removed Tone's lookahead. `outputLatency`
+   * reads 0 until audio is actually flowing, so poll it after playing a note.
+   */
+  outputLatencyMs(): number {
+    if (!this.started) return 0
+    const ctx = Tone.getContext().rawContext as AudioContext
+    return Math.round(((ctx.baseLatency || 0) + (ctx.outputLatency || 0)) * 1000)
+  }
+
   /** Returns true if the note was captured into a clip (recording path). */
   recordNoteOn(trackId: string, p: number, vel: number): boolean {
     if (!ui.recording || !this.started) return false
