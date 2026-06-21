@@ -17,6 +17,7 @@ import { makeInstrument, makeEffect, Inst, Fx } from './devices'
 import { instSchema, fxSchema, lfoShapeValue, LFO_DIV_TICKS, mixSpec, midiFxSchema } from './schema'
 import { getSampleBuffer, onSampleReady } from './samples'
 import { applyMidiFx as applyMidiFxData } from './midifx'
+import { getAudioPrefs } from './prefs'
 import { setUI, toast, ui } from '../state/store'
 
 const STOP = '__stop__'
@@ -112,16 +113,28 @@ class Engine {
   }
 
   private async doStart() {
-    // 2x-oversampled engine: run the whole graph at 88.2kHz, the browser
-    // resamples to the hardware rate on output. FM & nonlinear fx stay clean.
+    // Audio settings (user-tunable in the Audio Settings dialog, read here at boot):
+    //  • oversample → run the graph at 88.2kHz (2x) for alias-free FM/distortion,
+    //    or native rate to roughly HALVE CPU (more tracks/fx before glitching).
+    //  • latency (latencyHint) → output buffer size; bigger = fewer dropouts when
+    //    many tracks play, at the cost of a little input latency.
+    //  • sampleRate → native context rate (only when oversample is off).
     // Custom sample rates are unsupported on older Safari → fall back cleanly.
-    if (!this.noOversample) {
+    const prefs = getAudioPrefs()
+    const latencyHint = prefs.latency
+    const nativeOpts = (): AudioContextOptions =>
+      prefs.sampleRate === 'auto' ? { latencyHint } : { latencyHint, sampleRate: prefs.sampleRate }
+
+    if (prefs.oversample && !this.noOversample) {
       try {
-        const ctx = new AudioContext({ sampleRate: 88200, latencyHint: 'interactive' })
-        Tone.setContext(ctx)
+        Tone.setContext(new AudioContext({ sampleRate: 88200, latencyHint }))
       } catch {
         this.noOversample = true
       }
+    }
+    if (!prefs.oversample || this.noOversample) {
+      try { Tone.setContext(new AudioContext(nativeOpts())) }
+      catch { Tone.setContext(new AudioContext({ latencyHint })) }
     }
     await Tone.start()
     // Safari can leave the context 'suspended' even after start() — the Play
@@ -129,10 +142,11 @@ class Engine {
     // custom-rate context refuses to wake, drop oversampling and retry clean.
     let raw = Tone.getContext().rawContext as AudioContext
     if (raw.state !== 'running') { try { await raw.resume() } catch {} }
-    if (raw.state !== 'running' && !this.noOversample) {
+    if (raw.state !== 'running' && prefs.oversample && !this.noOversample) {
       this.noOversample = true
       try { await raw.close() } catch {}
-      Tone.setContext(new AudioContext({ latencyHint: 'interactive' }))
+      try { Tone.setContext(new AudioContext(nativeOpts())) }
+      catch { Tone.setContext(new AudioContext({ latencyHint })) }
       await Tone.start()
       raw = Tone.getContext().rawContext as AudioContext
       if (raw.state !== 'running') { try { await raw.resume() } catch {} }

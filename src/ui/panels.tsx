@@ -342,7 +342,7 @@ export function StatusBar() {
         {audioError
           ? <span className="status-pill warn" data-info="The audio engine failed to start — see the banner at the top">⚠ audio failed</span>
           : audioReady
-            ? <span className="status-pill ok" data-info="Audio engine: 2x oversampling for alias-free FM & distortion. ~ms is output latency (audio buffer + device) — live notes trigger near-immediately, this is the floor the browser sets.">{Math.round((engine.sampleRate || 0) / 100) / 10} kHz · 2x{latMs ? ` · ~${latMs} ms` : ''}</span>
+            ? <span className="status-pill ok" data-info="Audio engine sample rate. '2x' = oversampling for alias-free FM & distortion (toggle in Audio settings). ~ms is output latency (audio buffer + device) — live notes trigger near-immediately, this is the floor the browser sets.">{Math.round((engine.sampleRate || 0) / 100) / 10} kHz{engine.sampleRate >= 88000 ? ' · 2x' : ''}{latMs ? ` · ~${latMs} ms` : ''}</span>
             : <span className="status-pill warn"><i className="dot warn" />click anywhere to enable audio</span>}
         <span className={`status-pill net-${status}`} data-info="Local: just you (autosaved). Online: synced with friends via P2P">
           {status === 'local' ? <><i className="dot" />Local project</> : status === 'connecting' ? <><i className="dot warn" />Looking for peers…</> : <><i className="dot ok" />Online · {peers}</>}

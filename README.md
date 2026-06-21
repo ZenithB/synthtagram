@@ -47,6 +47,8 @@ No install, no account, no server. Your project autosaves locally; sharing creat
 
 ### Audio engine
 - Built on **Tone.js / Web Audio**, with the whole graph running at **88.2 kHz — 2× internal oversampling** — so FM synthesis and nonlinear effects stay clean; the browser resamples to your hardware on output. The waveshaping Drive stage additionally oversamples 4×.
+- **Low-latency live playing** — keyboard/MIDI notes trigger immediately (bypassing the scheduler lookahead used for clip playback), so the instrument responds like an instrument, not a video game. The status bar shows your live output latency.
+- **Audio settings** (⋯ menu) — tune the CPU/latency tradeoff: increase the **buffer size** for more headroom (fewer dropouts as track count climbs), or switch from 2× oversampling to **Native** rate to roughly halve CPU. One-click "Optimize for fewer glitches" applies both.
 - WAV export renders offline at 88.2 kHz, then resamples to 44.1 kHz / 16-bit.
 
 ---

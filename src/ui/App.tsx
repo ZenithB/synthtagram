@@ -9,6 +9,7 @@ import { PianoRoll } from './PianoRoll'
 import { AudioEditor } from './AudioEditor'
 import { DeviceRack } from './DeviceRack'
 import { Toasts, UndoPanel, CommandPalette, ShareDialog, HelpModal, ChatPanel, Onboard, StatusBar, AudioErrorBanner } from './panels'
+import { AudioSettings } from './AudioSettings'
 import { ContextMenuHost } from './widgets'
 import { setUI, ui, useUI } from '../state/store'
 import { engine } from '../audio/engine'
@@ -183,6 +184,7 @@ export function App() {
       <CommandPalette />
       <ShareDialog />
       <HelpModal />
+      <AudioSettings />
       <Onboard />
     </div>
   )

@@ -71,6 +71,7 @@ export function Topbar() {
     { label: <><Icon name="keys" size={12} /> Keyboard piano: {kbdOn ? 'On' : 'Off'}</>, fn: () => { setKbdEnabled(!isKbdEnabled()); setKbdOn(isKbdEnabled()) } },
     { label: <><Icon name={theme === 'dark' ? 'sun' : 'moon'} size={12} /> Theme: {theme === 'dark' ? 'Dark' : 'Light'}</>, fn: () => setUI({ theme: theme === 'dark' ? 'light' : 'dark' }) },
     'sep',
+    { label: <><Icon name="tools" size={12} /> Audio settings</>, fn: () => setUI({ audioSettingsOpen: true }) },
     { label: <><Icon name="map" size={12} /> Help & shortcuts</>, fn: () => setUI({ helpOpen: true }) },
   ])
 
