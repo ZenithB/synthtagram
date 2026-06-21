@@ -10,6 +10,7 @@ import { AudioEditor } from './AudioEditor'
 import { DeviceRack } from './DeviceRack'
 import { Toasts, UndoPanel, CommandPalette, ShareDialog, HelpModal, ChatPanel, Onboard, StatusBar, AudioErrorBanner } from './panels'
 import { AudioSettings } from './AudioSettings'
+import { PerfMonitor } from './PerfMonitor'
 import { ContextMenuHost } from './widgets'
 import { setUI, ui, useUI } from '../state/store'
 import { engine } from '../audio/engine'
@@ -185,6 +186,7 @@ export function App() {
       <ShareDialog />
       <HelpModal />
       <AudioSettings />
+      <PerfMonitor />
       <Onboard />
     </div>
   )

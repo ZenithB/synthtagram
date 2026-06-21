@@ -29,6 +29,7 @@ export type UIState = {
   shareOpen: boolean
   helpOpen: boolean
   audioSettingsOpen: boolean
+  perfMonitorOpen: boolean
   userName: string
   userColor: string
   zoomPxPerBar: number
@@ -73,6 +74,7 @@ export const ui: UIState = {
   shareOpen: false,
   helpOpen: false,
   audioSettingsOpen: false,
+  perfMonitorOpen: false,
   userName: savedName || randomName(),
   userColor: savedColor || USER_COLORS[Math.floor(Math.random() * USER_COLORS.length)],
   zoomPxPerBar: 96,

@@ -58,6 +58,9 @@ class Engine {
   arrParts: Array<Tone.Part | Tone.Player> = []
   arrSeekTicks = 0
   sampleRate = 0
+  // Audio render-thread load (Chromium `renderCapacity`), 0..1. This is the real
+  // "about to glitch" signal — how full the audio thread's per-callback budget is.
+  audioLoad = { avg: 0, peak: 0, underrun: 0, supported: false }
   private metro!: Tone.Synth
   private rebuildTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private partTimers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -157,6 +160,22 @@ class Engine {
     // instead of the engine silently building a graph onto a dead context.
     if (raw.state !== 'running') throw new Error(`AudioContext stuck in "${raw.state}"`)
     this.sampleRate = Tone.getContext().sampleRate
+
+    // Audio render-thread load monitor (Chromium only). Directly measures how
+    // close the audio thread is to underrunning — exactly what causes glitches.
+    const rc = (raw as any).renderCapacity
+    if (rc?.start) {
+      try {
+        this.audioLoad.supported = true
+        rc.onupdate = (e: any) => {
+          this.audioLoad = {
+            avg: e.averageLoad ?? 0, peak: e.peakLoad ?? 0,
+            underrun: e.underrunRatio ?? 0, supported: true,
+          }
+        }
+        rc.start({ updateInterval: 1 })
+      } catch { this.audioLoad.supported = false }
+    }
 
     const t = this.transport
     t.PPQ = 96
@@ -1139,6 +1158,22 @@ class Engine {
     if (!this.started) return 0
     const ctx = Tone.getContext().rawContext as AudioContext
     return Math.round(((ctx.baseLatency || 0) + (ctx.outputLatency || 0)) * 1000)
+  }
+
+  /** Snapshot of engine load for the performance monitor. */
+  perfStats() {
+    let effects = 0
+    this.built.forEach(t => { effects += t.fx.length })
+    return {
+      started: this.started,
+      tracks: this.built.size,
+      effects,
+      returns: this.builtReturns.length,
+      sampleRate: this.sampleRate,
+      oversampling: this.sampleRate >= 88000,
+      latencyMs: this.outputLatencyMs(),
+      audioLoad: this.audioLoad,
+    }
   }
 
   /** Returns true if the note was captured into a clip (recording path). */

@@ -430,6 +430,24 @@ button { cursor: pointer; background: none; border: none; }
 @keyframes recblink { 50% { opacity: 0.25; } }
 .export-hint { color: var(--muted); font-size: 11px; }
 
+/* performance monitor */
+.perf-dialog { width: 372px; gap: 0; max-height: 86vh; overflow-y: auto; }
+.perf-section { color: var(--accent); font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.7px; margin: 13px 0 7px; }
+.perf-section:first-of-type { margin-top: 2px; }
+.perf-row { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; font-size: 12px; margin-bottom: 5px; }
+.perf-row.wide { margin-bottom: 3px; }
+.perf-k { color: var(--muted); }
+.perf-v { font-variant-numeric: tabular-nums; font-weight: 600; color: var(--text); text-align: right; }
+.perf-v.ok { color: var(--ok); }
+.perf-v.warn { color: var(--warn); }
+.perf-v.danger { color: var(--danger); }
+.perf-bar { height: 6px; border-radius: 3px; background: var(--bg0); overflow: hidden; margin: 1px 0 9px; border: 1px solid var(--border); }
+.perf-bar-fill { height: 100%; border-radius: 3px; transition: width 0.3s ease, background 0.3s; }
+.perf-bar-fill.ok { background: var(--ok); }
+.perf-bar-fill.warn { background: var(--warn); }
+.perf-bar-fill.danger { background: var(--danger); }
+.perf-hint { color: var(--muted); font-size: 10.5px; line-height: 1.4; margin: 5px 0 6px; }
+
 .share-row { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
 .share-row span { width: 86px; color: var(--dim); font-size: 12px; }
 .share-row input { flex: 1; background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; color: var(--text); outline: none; }

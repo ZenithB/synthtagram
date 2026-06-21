@@ -99,6 +99,22 @@ const servedPeers = new Set<string>()   // peerIds we've already pushed full sta
 let leaveTimer: ReturnType<typeof setTimeout> | null = null
 let announcedOnline = false
 
+// Cumulative P2P traffic counters (project-sync payload bytes — what Synthtagram
+// actually sends over WebRTC). Read by the performance monitor, which samples the
+// totals over time to derive a live rate.
+const net = { sent: 0, recv: 0, sentMsgs: 0, recvMsgs: 0 }
+const sent = (u: Uint8Array) => { net.sent += u.byteLength; net.sentMsgs++ }
+const recv = (u: any) => { net.recv += (u?.byteLength ?? 0); net.recvMsgs++ }
+
+export function getNetStats() {
+  return {
+    ...net,
+    peers: wiredRooms.reduce((n, r) => n + Object.keys(r.room.getPeers()).length, 0),
+    strategies: wiredRooms.map(r => r.label),
+    status: ui.netStatus,
+  }
+}
+
 function anyPeers() {
   return wiredRooms.some(r => Object.keys(r.room.getPeers()).length > 0)
 }
@@ -197,17 +213,19 @@ export async function startP2P() {
     const [sendS, onS] = room.makeAction('ys')
     const [sendA, onA] = room.makeAction('aw')
     const [sendRq, onRq] = room.makeAction('rq')
-    onU((u: any) => applyDoc(u))
-    onS((u: any) => applyDoc(u))
-    onA((u: any) => applyAware(u))
-    sendUFns.push((u, t) => { try { sendU(u, t)?.catch?.(() => {}) } catch { /* ok */ } })
-    sendAFns.push((u, t) => { try { sendA(u, t)?.catch?.(() => {}) } catch { /* ok */ } })
-    sendRqFns.push((_u, t) => { try { sendRq(new Uint8Array(0), t)?.catch?.(() => {}) } catch { /* ok */ } })
+    onU((u: any) => { recv(u); applyDoc(u) })
+    onS((u: any) => { recv(u); applyDoc(u) })
+    onA((u: any) => { recv(u); applyAware(u) })
+    sendUFns.push((u, t) => { sent(u); try { sendU(u, t)?.catch?.(() => {}) } catch { /* ok */ } })
+    sendAFns.push((u, t) => { sent(u); try { sendA(u, t)?.catch?.(() => {}) } catch { /* ok */ } })
+    sendRqFns.push((_u, t) => { net.sentMsgs++; try { sendRq(new Uint8Array(0), t)?.catch?.(() => {}) } catch { /* ok */ } })
 
     // Hand a peer the full project + presence (idempotent in Yjs).
     const pushTo = (peer: string) => {
-      try { sendS(Y.encodeStateAsUpdate(doc), peer)?.catch?.(() => {}) } catch { /* ok */ }
-      try { sendA(encodeAwarenessUpdate(awareness, [...awareness.getStates().keys()]), peer)?.catch?.(() => {}) } catch { /* ok */ }
+      const s = Y.encodeStateAsUpdate(doc); sent(s)
+      try { sendS(s, peer)?.catch?.(() => {}) } catch { /* ok */ }
+      const a = encodeAwarenessUpdate(awareness, [...awareness.getStates().keys()]); sent(a)
+      try { sendA(a, peer)?.catch?.(() => {}) } catch { /* ok */ }
     }
 
     // A peer explicitly asked for state — always answer if we actually have a
