@@ -67,6 +67,9 @@ export type TrackJSON = {
   gain: number; pan: number; mute: boolean; solo: boolean
   sendA?: number; sendB?: number
   lfos?: LfoJSON[]; macros?: MacroJSON[]; midifx?: MidiFxJSON[]
+  // arrangement automation: paramId ("dest|fxId|pkey") → breakpoints in absolute song ticks
+  auto?: Record<string, { t: number; v: number }[]>
+  autoOpen?: boolean; autoParam?: string
 }
 export type ProjectJSON = {
   meta: { title: string; bpm: number; swing: number; swingSubdivision?: string; humanize?: number; root: number; scale: string; launchQ: number; masterGain?: number; loopOn?: boolean; loopStart?: number; loopEnd?: number }
@@ -191,6 +194,13 @@ function yTrack(t: TrackJSON) {
   m.set('solo', t.solo)
   m.set('sendA', t.sendA ?? 0)
   m.set('sendB', t.sendB ?? 0)
+  if (t.auto && Object.keys(t.auto).length) {
+    const am = new Y.Map<any>()
+    for (const [k, pts] of Object.entries(t.auto)) { const a = new Y.Array<any>(); a.push(pts.map(p => ({ ...p }))); am.set(k, a) }
+    m.set('auto', am)
+  }
+  if (t.autoOpen) m.set('autoOpen', true)
+  if (t.autoParam) m.set('autoParam', t.autoParam)
   return m
 }
 
@@ -671,6 +681,35 @@ export function envKeys(clipMap: Y.Map<any>): string[] {
   return out
 }
 
+// ---------- arrangement (track-timeline) automation ----------
+// Same {t,v} breakpoint shape as clip envelopes, but stored per TRACK keyed by
+// paramId, with t in ABSOLUTE song ticks (independent of clips).
+export function trackAutoKeys(trackId: string): string[] {
+  const am = trackById(trackId)?.get('auto') as Y.Map<any> | undefined
+  if (!am) return []
+  const out: string[] = []
+  am.forEach((_v, k) => out.push(k))
+  return out
+}
+export function trackAutoPoints(trackId: string, key: string): { t: number; v: number }[] {
+  const am = trackById(trackId)?.get('auto') as Y.Map<any> | undefined
+  const a = am?.get(key) as Y.Array<any> | undefined
+  return a ? a.toArray().map(p => ({ ...p })) : []
+}
+export function setTrackAutoPoints(trackId: string, key: string, points: { t: number; v: number }[]) {
+  const t = trackById(trackId); if (!t) return
+  mutate('Edit automation', () => {
+    let am = t.get('auto') as Y.Map<any> | undefined
+    if (!am) { am = new Y.Map<any>(); t.set('auto', am) }
+    if (points.length === 0) { am.delete(key); return }
+    const a = new Y.Array<any>()
+    a.push(points.slice().sort((x, y) => x.t - y.t).map(p => ({ t: Math.round(p.t), v: p.v })))
+    am.set(key, a)
+  })
+}
+export const setAutoOpen = (trackId: string, v: boolean) => { const t = trackById(trackId); if (t) mutate('Toggle automation', () => t.set('autoOpen', v)) }
+export const setAutoParam = (trackId: string, key: string) => { const t = trackById(trackId); if (t) mutate('Automation parameter', () => t.set('autoParam', key)) }
+
 // ---------- follow actions (session clips) ----------
 export function setFollow(clipMap: Y.Map<any>, patch: Record<string, any>) {
   mutate('Follow action', () => {
@@ -961,6 +1000,13 @@ export function exportProject(): ProjectJSON {
         gain: t.get('gain'), pan: t.get('pan'), mute: t.get('mute'), solo: t.get('solo'),
         sendA: t.get('sendA') ?? 0, sendB: t.get('sendB') ?? 0,
         lfos, macros, midifx,
+        ...(() => {
+          const am = t.get('auto') as Y.Map<any> | undefined
+          if (!am || am.size === 0) return { autoOpen: !!t.get('autoOpen'), autoParam: t.get('autoParam') ?? undefined }
+          const auto: Record<string, { t: number; v: number }[]> = {}
+          am.forEach((arr2, k) => { auto[k] = (arr2 as Y.Array<any>).toArray().map(p => ({ ...p })) })
+          return { auto, autoOpen: !!t.get('autoOpen'), autoParam: t.get('autoParam') ?? undefined }
+        })(),
       }
     }),
     scenes: scenes.toArray().map(s => ({ id: s.get('id'), name: s.get('name') })),

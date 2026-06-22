@@ -21,21 +21,7 @@ import { clips, clipKey } from '../state/doc'
 import { Icon } from './icons'
 
 // Automation targets available for a track (continuous params only).
-function autoTargets(trackId: string | null): { key: string; label: string }[] {
-  if (!trackId) return []
-  const t = trackById(trackId); if (!t) return []
-  const out: { key: string; label: string }[] = []
-  out.push({ key: 'mix||gain', label: 'Volume' }, { key: 'mix||pan', label: 'Pan' })
-  if (t.get('kind') !== 'drum') {
-    instSchema(t.get('inst').get('type')).params.filter(p => !p.steps).forEach(p =>
-      out.push({ key: `inst||${p.key}`, label: `Inst · ${p.label}` }))
-  }
-  ;(t.get('fx') as any).forEach((f: any) => {
-    fxSchema(f.get('type')).params.filter((p: any) => !p.steps).forEach((p: any) =>
-      out.push({ key: `fx|${f.get('id')}|${p.key}`, label: `${fxSchema(f.get('type')).label} · ${p.label}` }))
-  })
-  return out
-}
+import { autoTargets } from '../audio/params'
 
 const KEY_W = 48
 const LANE_H = 64

@@ -8,8 +8,10 @@ import { BAR, CLIP_COLORS, clamp, ticksToBBS } from '../types'
 import {
   tracks, arr, meta, addArrClip, moveArrClip, resizeArrClip, deleteArrClip,
   duplicateArrClip, setClipField, setLoopRegion, arrEndTicks, setTrackMix, clipToJSON,
-  clips, clipKey,
+  clips, clipKey, setAutoOpen, setAutoParam,
 } from '../state/doc'
+import { autoTargets } from '../audio/params'
+import { AutomationLane } from './AutomationLane'
 import { engine } from '../audio/engine'
 import { setUI, ui, useUI, toast } from '../state/store'
 import { useY, useRaf } from './hooks'
@@ -20,7 +22,7 @@ import { peersList, subscribeAwareness, awarenessVersion } from '../state/net'
 import { MIDI_LOOPS, PROGRESSIONS, progressionClip, clipInKey } from '../packs'
 import { loadLoop } from './actions'
 
-const LANE_H = 74
+const LANE_H = 88
 const HEAD_W = 168
 
 // Pan control spec (mirrors Session view): -1 full left … +1 full right.
@@ -71,6 +73,7 @@ export function ArrangementView() {
   const [drag, setDrag] = useState<DragState>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const headsRef = useRef<HTMLDivElement>(null)
+  const lanesRef = useRef<HTMLDivElement>(null)
   // Keep the left track headers in vertical lockstep with the lane area: they
   // live in a separate (non-scrolling) column, so translate their inner content
   // to mirror the scroll position. The corner stays pinned (like the ruler).
@@ -82,6 +85,27 @@ export function ArrangementView() {
   const laneOf = (tid: string) => trackArr.findIndex(t => t.get('id') === tid)
   const totalBars = Math.max(33, Math.ceil(arrEndTicks() / BAR) + 9)
   const width = totalBars * zoom
+
+  // Vertical row layout: each track is one row (LANE_H); if its automation lane
+  // is expanded, an equal-height row follows directly below it. Everything (clip
+  // tops, lane backgrounds, hit-testing, the heads column) derives from this so
+  // the two columns stay aligned.
+  const trackTop: Record<string, number> = {}
+  const autoTop: Record<string, number> = {}
+  const bgRows: { tid: string; kind: 'track' | 'auto'; top: number }[] = []
+  let yAcc = 0
+  for (const t of trackArr) {
+    const tid = t.get('id') as string
+    trackTop[tid] = yAcc; bgRows.push({ tid, kind: 'track', top: yAcc }); yAcc += LANE_H
+    if (t.get('autoOpen')) { autoTop[tid] = yAcc; bgRows.push({ tid, kind: 'auto', top: yAcc }); yAcc += LANE_H }
+  }
+  const lanesHeight = Math.max(yAcc, LANE_H)
+  const trackTopByIdx = (i: number) => { const t = trackArr[i]; return t ? trackTop[t.get('id') as string] : 0 }
+  const rowAtY = (y: number) => bgRows.find(r => y >= r.top && y < r.top + LANE_H)
+  const trackIdxAtY = (y: number) => {
+    const r = rowAtY(y)
+    return r ? trackArr.findIndex(t => t.get('id') === r.tid) : clamp(Math.floor(y / LANE_H), 0, trackArr.length - 1)
+  }
 
   const loopOn = !!meta.get('loopOn')
   const loopStart = meta.get('loopStart') ?? 0
@@ -125,7 +149,9 @@ export function ArrangementView() {
   const onPointerMove = (e: React.PointerEvent) => {
     if (!drag) return
     if (drag.type === 'move') {
-      setDrag({ ...drag, dx: (e.clientX - drag.startX) / z / pxPerTick, dLane: Math.round((e.clientY - drag.startY) / z / LANE_H), copy: e.altKey || drag.copy })
+      const lr = lanesRef.current?.getBoundingClientRect()
+      const targetIdx = lr ? trackIdxAtY((e.clientY - lr.top) / z) : drag.origLane
+      setDrag({ ...drag, dx: (e.clientX - drag.startX) / z / pxPerTick, dLane: targetIdx - drag.origLane, copy: e.altKey || drag.copy })
     } else if (drag.type === 'resize') {
       setDrag({ ...drag, dLen: (e.clientX - drag.startX) / z / pxPerTick })
     } else if (drag.type === 'loop') {
@@ -194,7 +220,7 @@ export function ArrangementView() {
         className={`arr-clip ${isSel ? 'selected' : ''} ${ghost ? 'ghost-drag' : ''}`}
         style={{
           left: start * pxPerTick,
-          top: laneIdx * LANE_H + 2,
+          top: trackTopByIdx(laneIdx) + 2,
           width: Math.max(8, len * pxPerTick - 2),
           height: LANE_H - 5,
           background: `color-mix(in srgb, ${color} 26%, var(--bg2))`,
@@ -227,18 +253,37 @@ export function ArrangementView() {
         <div className="arr-heads-inner" ref={headsRef}>
           {trackArr.map(t => {
             const tid = t.get('id')
+            const autoOpen = !!t.get('autoOpen')
             return (
-              <div key={tid} className="arr-head" style={{ height: LANE_H, borderLeftColor: CLIP_COLORS[t.get('color') ?? 0] }}
-                onClick={() => { setUI({ selTrackId: tid, detailOpen: true, detailTab: 'devices' }) }}>
-                <div className="arr-head-top">
-                  <span className="arr-head-name">{t.get('name')}</span>
-                  <button className={`tbtn mute ${t.get('mute') ? 'on' : ''}`} onClick={e => { e.stopPropagation(); setTrackMix(tid, { mute: !t.get('mute') }) }}>M</button>
+              <React.Fragment key={tid}>
+                <div className="arr-head" style={{ height: LANE_H, borderLeftColor: CLIP_COLORS[t.get('color') ?? 0] }}
+                  onClick={() => { setUI({ selTrackId: tid, detailOpen: true, detailTab: 'devices' }) }}>
+                  <div className="arr-head-top">
+                    <span className="arr-head-name">{t.get('name')}</span>
+                    <button className={`tbtn mute ${t.get('mute') ? 'on' : ''}`} onClick={e => { e.stopPropagation(); setTrackMix(tid, { mute: !t.get('mute') }) }}>M</button>
+                  </div>
+                  <div className="arr-head-mix" onClick={e => e.stopPropagation()} onDoubleClick={e => e.stopPropagation()}>
+                    <HFader value={t.get('gain') ?? 0} onChange={v => setTrackMix(tid, { gain: v })} />
+                    <Knob spec={PAN_SPEC} value={t.get('pan') ?? 0} onChange={v => setTrackMix(tid, { pan: v })} size={20} />
+                  </div>
+                  <button className={`arr-auto-toggle ${autoOpen ? 'on' : ''}`}
+                    data-info="Show/hide this track's automation lane"
+                    onClick={e => { e.stopPropagation(); setAutoOpen(tid, !autoOpen) }}>
+                    <span className="arr-auto-caret">▸</span> automation
+                  </button>
                 </div>
-                <div className="arr-head-mix" onClick={e => e.stopPropagation()} onDoubleClick={e => e.stopPropagation()}>
-                  <HFader value={t.get('gain') ?? 0} onChange={v => setTrackMix(tid, { gain: v })} />
-                  <Knob spec={PAN_SPEC} value={t.get('pan') ?? 0} onChange={v => setTrackMix(tid, { pan: v })} size={20} />
-                </div>
-              </div>
+                {autoOpen && (
+                  <div className="arr-head-auto" style={{ height: LANE_H, borderLeftColor: CLIP_COLORS[t.get('color') ?? 0] }}
+                    onClick={e => e.stopPropagation()}>
+                    <span className="arr-auto-title">Automation</span>
+                    <select className="auto-select" value={t.get('autoParam') ?? 'mix||gain'}
+                      onChange={e => setAutoParam(tid, e.target.value)}
+                      data-info="Parameter automated by this lane">
+                      {autoTargets(tid).map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
+                    </select>
+                  </div>
+                )}
+              </React.Fragment>
             )
           })}
         </div>
@@ -272,14 +317,17 @@ export function ArrangementView() {
 
           <div
             className="arr-lanes"
-            style={{ height: trackArr.length * LANE_H }}
+            ref={lanesRef}
+            style={{ height: lanesHeight }}
             onDoubleClick={e => {
               const rect = e.currentTarget.getBoundingClientRect()
-              const t = snap((e.clientX - rect.left) / z / pxPerTick, false)
-              const lane = Math.floor((e.clientY - rect.top) / z / LANE_H)
-              const tid = trackArr[lane]?.get('id')
+              const y = (e.clientY - rect.top) / z
+              if (rowAtY(y)?.kind === 'auto') return   // automation lanes don't make clips
+              const idx = trackIdxAtY(y)
+              const tid = trackArr[idx]?.get('id')
               if (!tid) return
-              const id = addArrClip(tid, Math.max(0, t), { name: 'Clip', color: trackArr[lane].get('color') ?? 0, len: BAR * 4, notes: {} })
+              const t = snap((e.clientX - rect.left) / z / pxPerTick, false)
+              const id = addArrClip(tid, Math.max(0, t), { name: 'Clip', color: trackArr[idx].get('color') ?? 0, len: BAR * 4, notes: {} })
               selectClip({ kind: 'arr', id }, true)
             }}
             onClick={e => { if ((e.target as HTMLElement).classList.contains('arr-lanes')) seekFromEvent(e, e.currentTarget) }}
@@ -290,8 +338,7 @@ export function ArrangementView() {
               const clipSrc = e.dataTransfer.getData('stg/clip')
               const rect = e.currentTarget.getBoundingClientRect()
               const t = Math.max(0, snap((e.clientX - rect.left) / z / pxPerTick, false))
-              const lane = Math.floor((e.clientY - rect.top) / z / LANE_H)
-              const tid = trackArr[lane]?.get('id')
+              const tid = trackArr[trackIdxAtY((e.clientY - rect.top) / z)]?.get('id')
               if (loopName) {
                 const loop = MIDI_LOOPS.find(l => l.name === loopName)
                 if (loop && tid) {
@@ -316,11 +363,20 @@ export function ArrangementView() {
               }
             }}
           >
-            {trackArr.map((_t, i) => <div key={i} className="lane-bg" style={{ top: i * LANE_H, height: LANE_H }} />)}
+            {bgRows.map((r, i) => <div key={i} className={`lane-bg ${r.kind === 'auto' ? 'auto' : ''}`} style={{ top: r.top, height: LANE_H }} />)}
             {Array.from({ length: totalBars }, (_, i) => (
               <div key={i} className="lane-grid" style={{ left: i * zoom }} />
             ))}
             {clipEls}
+            {trackArr.filter(t => t.get('autoOpen')).map(t => {
+              const tid = t.get('id') as string
+              return (
+                <div key={'auto-' + tid} className="arr-auto-lane" style={{ top: autoTop[tid], height: LANE_H, width }}>
+                  <AutomationLane trackId={tid} paramKey={t.get('autoParam') ?? 'mix||gain'}
+                    width={width} pxPerTick={pxPerTick} height={LANE_H} snapTicks={ui.gridTicks} />
+                </div>
+              )
+            })}
             <Playhead pxPerTick={pxPerTick} />
             <GhostPlayheads pxPerTick={pxPerTick} />
           </div>

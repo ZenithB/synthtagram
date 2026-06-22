@@ -271,6 +271,12 @@ class Engine {
       const setter = (v: number) => { if (pkey === 'gain') rec.vol.volume.rampTo(v, 0.02); else rec.panner.pan.setTargetAtTime(v, Tone.now(), 0.02) }
       return { spec, base, setter }
     }
+    if (dest === 'send') {
+      const node = pkey === 'B' ? rec.sendB : rec.sendA
+      const base = (t.get(pkey === 'B' ? 'sendB' : 'sendA') as number) ?? 0
+      const spec = { key: 'send', label: 'Send', min: 0, max: 1, def: 0 } as any
+      return { spec, base, setter: (v: number) => node.gain.rampTo(v, 0.02) }
+    }
     const fxMap = this.findFxMap(t, fxId)
     const bf = rec.fx.find(f => f.id === fxId)
     if (!fxMap || !bf) return null
@@ -299,8 +305,9 @@ class Engine {
       const autoNorm = new Map<string, number>()
       const lfoOff = new Map<string, number>()
 
-      // ---- automation: the playing session clip's envelopes ----
-      if (this.mode === 'session' && rec.partKey && playing) {
+      // ---- automation ----
+      if (playing && this.mode === 'session' && rec.partKey) {
+        // SESSION: the launched clip's looping envelopes.
         const clipMap = clips.get(rec.partKey) as Y.Map<any> | undefined
         if (clipMap) {
           const loop = rec.partLoopTicks || BAR
@@ -313,6 +320,35 @@ class Engine {
             controlled.set(k, { dest, fxId: fxId || '', pkey })
           }
         }
+      } else if (playing && this.mode === 'arr') {
+        const tick = this.transport.ticks
+        // 1) ARRANGEMENT (track-timeline) automation — absolute song time (Option B).
+        const am = t.get('auto') as Y.Map<any> | undefined
+        am?.forEach((arr2, k) => {
+          const pts = (arr2 as Y.Array<any>).toArray()
+          if (!pts.length) return
+          autoNorm.set(k, this.envValueAt(pts, tick, 0))
+          const [dest, fxId, pkey] = k.split('|')
+          controlled.set(k, { dest, fxId: fxId || '', pkey })
+        })
+        // 2) the arrangement clip under the playhead — its CLIP envelopes (these
+        //    override track automation for the same param while the clip plays).
+        //    This is also the fix for clip automation not playing in Arrangement view.
+        arr.forEach((cm: Y.Map<any>) => {
+          if (cm.get('trackId') !== tid) return
+          const start = cm.get('start') ?? 0
+          const len = cm.get('len') ?? BAR
+          if (tick < start || tick >= start + len) return
+          const cl = (cm.get('len') as number) || BAR
+          const pos = (((tick - start) % cl) + cl) % cl
+          for (const k of envKeys(cm)) {
+            const pts = envPoints(cm, k)
+            if (!pts.length) continue
+            autoNorm.set(k, this.envValueAt(pts, pos, cl))
+            const [dest, fxId, pkey] = k.split('|')
+            controlled.set(k, { dest, fxId: fxId || '', pkey })
+          }
+        })
       }
 
       // ---- LFOs: add a bipolar offset on top ----
