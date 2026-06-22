@@ -11,8 +11,9 @@ import {
   addLfo, removeLfo, setLfoField, setLfoTarget, setSend,
   addMidiFx, removeMidiFx, setMidiFxParam, setMidiFxOn, midifxOf,
   ensureMacros, macrosOf, setMacroValue, addMacroTarget, clearMacroTargets, setMacroName,
-  returns, setReturnGain, setReturnParam, setReturnFxType, setSamplerSample,
+  returns, setReturnGain, setReturnParam, setReturnFxType, setSamplerSample, busList,
 } from '../state/doc'
+import { attemptBusSend } from './actions'
 import { useUI, toast } from '../state/store'
 import { useY, useRaf } from './hooks'
 import { Knob, openMenu } from './widgets'
@@ -326,12 +327,19 @@ function MidiFxCard({ trackId, fx }: { trackId: string; fx: Y.Map<any> }) {
 }
 
 function SendsCard({ trackId, track }: { trackId: string; track: Y.Map<any> }) {
+  const sends = track.get('sends') as Y.Map<number> | undefined
+  const buses = busList().filter(b => b.get('id') !== trackId)   // a bus can't send to itself
   return (
     <div className="device sends-device">
       <div className="device-head"><span className="device-title"><Icon name="send" size={13} /> Sends</span></div>
       <div className="knob-row">
         <Knob spec={SEND_A_SPEC} value={track.get('sendA') ?? 0} onChange={v => setSend(trackId, 'sendA', v)} size={36} />
         <Knob spec={SEND_B_SPEC} value={track.get('sendB') ?? 0} onChange={v => setSend(trackId, 'sendB', v)} size={36} />
+        {buses.map(b => {
+          const bid = b.get('id') as string
+          const spec: ParamSpec = { key: `bus-${bid}`, label: `→ ${b.get('name')}`, min: 0, max: 1, def: 0, fmt: fmtPct }
+          return <Knob key={bid} spec={spec} value={(sends?.get(bid) as number) ?? 0} onChange={v => attemptBusSend(trackId, bid, v)} size={36} />
+        })}
       </div>
     </div>
   )
@@ -414,7 +422,7 @@ export function DeviceRack() {
   const kind = track.get('kind')
   return (
     <div className="rack">
-      {kind !== 'drum' && (
+      {kind !== 'drum' && kind !== 'bus' && (
         <>
           {midiArr?.toArray().map(m => <MidiFxCard key={m.get('id')} trackId={selTrackId} fx={m} />)}
           <button className="add-fx add-midi" data-info="Add a live MIDI effect (processes notes before the instrument)"
@@ -427,7 +435,9 @@ export function DeviceRack() {
           <div className="chain-arrow">→</div>
         </>
       )}
-      <InstrumentPanel trackId={selTrackId} track={track} />
+      {kind === 'bus'
+        ? <div className="bus-input-label" data-info="Audio arriving from sends enters here"><Icon name="send" size={13} /> Bus input</div>
+        : <InstrumentPanel trackId={selTrackId} track={track} />}
       <div className="chain-arrow">→</div>
       {fxArr.toArray().map(f => <FxCard key={f.get('id')} trackId={selTrackId} fx={f} />)}
       <button

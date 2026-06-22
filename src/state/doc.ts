@@ -66,6 +66,8 @@ export type TrackJSON = {
   fx: FxJSON[]
   gain: number; pan: number; mute: boolean; solo: boolean
   sendA?: number; sendB?: number
+  output?: string                       // routing target for buses: 'master' | busTrackId
+  sends?: Record<string, number>        // busTrackId → send level (sends into user buses)
   lfos?: LfoJSON[]; macros?: MacroJSON[]; midifx?: MidiFxJSON[]
   // arrangement automation: paramId ("dest|fxId|pkey") → breakpoints in absolute song ticks
   auto?: Record<string, { t: number; v: number }[]>
@@ -194,6 +196,10 @@ function yTrack(t: TrackJSON) {
   m.set('solo', t.solo)
   m.set('sendA', t.sendA ?? 0)
   m.set('sendB', t.sendB ?? 0)
+  m.set('output', t.output ?? 'master')
+  const sends = new Y.Map<number>()
+  if (t.sends) for (const [k, v] of Object.entries(t.sends)) sends.set(k, v)
+  m.set('sends', sends)
   if (t.auto && Object.keys(t.auto).length) {
     const am = new Y.Map<any>()
     for (const [k, pts] of Object.entries(t.auto)) { const a = new Y.Array<any>(); a.push(pts.map(p => ({ ...p }))); am.set(k, a) }
@@ -541,6 +547,47 @@ export function setSend(trackId: string, which: 'sendA' | 'sendB', v: number) {
   mutate('Send level', () => trackById(trackId)?.set(which, v))
 }
 
+// ---------- buses ----------
+export function busList(): Y.Map<any>[] {
+  return tracks.toArray().filter(t => t.get('kind') === 'bus')
+}
+/** Set a track's bus-send level (busTrackId → 0..1). */
+export function setBusSend(trackId: string, busId: string, level: number) {
+  mutate('Bus send', () => {
+    const t = trackById(trackId); if (!t) return
+    let sm = t.get('sends') as Y.Map<number> | undefined
+    if (!sm) { sm = new Y.Map<number>(); t.set('sends', sm) }
+    sm.set(busId, level)
+  })
+}
+/** Route a bus's output: 'master' or another bus's id. */
+export function setTrackOutput(trackId: string, target: string) {
+  mutate('Bus output', () => trackById(trackId)?.set('output', target))
+}
+/**
+ * Would audio leaving `fromBusId` ever reach `toBusId` along the current routing
+ * (bus outputs + bus→bus sends)? Used to detect feedback before committing a new
+ * route from `toBusId` into `fromBusId`.
+ */
+export function busCanReach(fromBusId: string, toBusId: string): boolean {
+  const seen = new Set<string>()
+  const visit = (id: string): boolean => {
+    if (id === toBusId) return true
+    if (seen.has(id)) return false
+    seen.add(id)
+    const t = trackById(id)
+    if (!t || t.get('kind') !== 'bus') return false
+    const out = t.get('output') as string | undefined
+    if (out && out !== 'master' && visit(out)) return true
+    const sm = t.get('sends') as Y.Map<number> | undefined
+    if (sm) for (const [bid, lvl] of sm.entries()) {
+      if ((lvl ?? 0) > 0 && trackById(bid)?.get('kind') === 'bus' && visit(bid)) return true
+    }
+    return false
+  }
+  return visit(fromBusId)
+}
+
 // ---------- macro racks ----------
 function macrosArr(t: Y.Map<any>): Y.Array<Y.Map<any>> {
   let a = t.get('macros') as Y.Array<Y.Map<any>> | undefined
@@ -744,6 +791,16 @@ export function addAudioTrack(name: string, color: number): string {
     name, color, kind: 'audio',
     inst: { type: 'audiobus', params: {} },
     fx: [], gain: 0, pan: 0, mute: false, solo: false,
+  })
+}
+
+// A bus is a clip-less track: the audiobus passthrough is its input (sends land
+// there), it has an fx chain, and its fader routes to `output` (master/another bus).
+export function addBusTrack(name: string, color: number): string {
+  return addTrack({
+    name, color, kind: 'bus',
+    inst: { type: 'audiobus', params: {} },
+    fx: [], gain: 0, pan: 0, mute: false, solo: false, output: 'master',
   })
 }
 
@@ -999,6 +1056,8 @@ export function exportProject(): ProjectJSON {
         })),
         gain: t.get('gain'), pan: t.get('pan'), mute: t.get('mute'), solo: t.get('solo'),
         sendA: t.get('sendA') ?? 0, sendB: t.get('sendB') ?? 0,
+        output: t.get('output') ?? 'master',
+        sends: (() => { const sm = t.get('sends') as Y.Map<number> | undefined; const o: Record<string, number> = {}; sm?.forEach((v, k) => { o[k] = v }); return o })(),
         lfos, macros, midifx,
         ...(() => {
           const am = t.get('auto') as Y.Map<any> | undefined

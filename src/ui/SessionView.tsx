@@ -8,7 +8,7 @@ import {
   tracks, scenes, clips, clipKey, createClip, deleteClipAt, duplicateClipTo,
   removeTrack, renameTrack, setTrackColor, duplicateTrack, moveTrack, setTrackMix,
   addScene, removeScene, renameScene, duplicateScene, sendClipToArr, sendSceneToArr,
-  setMetaField, meta, setClipField, trackById, moveArrClip,
+  setMetaField, meta, setClipField, trackById, moveArrClip, busList,
 } from '../state/doc'
 import { engine } from '../audio/engine'
 import { setUI, ui, useUI, toast } from '../state/store'
@@ -18,7 +18,8 @@ import { peersList, subscribeAwareness, awarenessVersion, setPresence } from '..
 import { Icon } from './icons'
 import {
   selectClip, selectTrack, copyClipRef, pasteClipTo, hasClipboard,
-  addSynthTrack, addDrumTrack, duplicateClipToNextScene, loadLoop, loadProgression,
+  addSynthTrack, addDrumTrack, addAudio, addBus, attemptSetOutput,
+  duplicateClipToNextScene, loadLoop, loadProgression,
 } from './actions'
 import { MIDI_LOOPS, INST_PRESETS, DRUM_KITS, PROGRESSIONS } from '../packs'
 import { applyPreset, applyDrumKit } from './actions'
@@ -277,11 +278,11 @@ function TrackHeader({ track }: { track: Y.Map<any> }) {
           : <span className="track-name" onDoubleClick={() => setRenaming(true)}>{track.get('name')}</span>}
       </div>
       <div className="track-btns">
-        <button
+        {kind !== 'bus' && <button
           className={`tbtn arm ${isArmed ? 'on' : ''}`}
           data-info="Arm: route your keyboard/MIDI to this track (and record into it)"
           onClick={e => { e.stopPropagation(); setUI({ armTrackId: isArmed ? null : trackId }) }}
-        ><Icon name="rec" size={9} /></button>
+        ><Icon name="rec" size={9} /></button>}
         <button
           className={`tbtn mute ${track.get('mute') ? 'on' : ''}`}
           data-info="Mute track"
@@ -298,6 +299,17 @@ function TrackHeader({ track }: { track: Y.Map<any> }) {
         <MeterBar getDb={() => engine.meterDb(trackId)} height={64} />
         <Knob spec={PAN_SPEC} value={track.get('pan') ?? 0} onChange={v => setTrackMix(trackId, { pan: v })} size={26} />
       </div>
+      {kind === 'bus' && (
+        <div className="bus-out" onClick={e => e.stopPropagation()} data-info="Where this bus's output is routed">
+          <span className="bus-out-label">Output ▾</span>
+          <select className="device-select" value={track.get('output') ?? 'master'}
+            onChange={e => attemptSetOutput(trackId, e.target.value)}>
+            <option value="master">Master</option>
+            {busList().filter(b => b.get('id') !== trackId).map(b =>
+              <option key={b.get('id')} value={b.get('id')}>{b.get('name')}</option>)}
+          </select>
+        </div>
+      )}
     </div>
   )
 }
@@ -335,22 +347,31 @@ export function SessionView() {
   return (
     <div className="session" onClick={e => { if (e.target === e.currentTarget) selectClip(null) }}>
       <div className="session-scroll">
-        {tracks.toArray().map(t => (
-          <div className="track-col" key={t.get('id')}>
-            <TrackHeader track={t} />
-            <div className="slots">
-              {scenes.toArray().map(s => (
-                <ClipSlot key={s.get('id')} track={t} sceneId={s.get('id')} />
-              ))}
+        {tracks.toArray().map(t => {
+          const isBus = t.get('kind') === 'bus'
+          return (
+            <div className={`track-col ${isBus ? 'bus-col' : ''}`} key={t.get('id')}>
+              <TrackHeader track={t} />
+              {isBus
+                ? <div className="slots bus-slots" data-info="Buses carry audio from sends — they hold no clips" />
+                : <>
+                    <div className="slots">
+                      {scenes.toArray().map(s => (
+                        <ClipSlot key={s.get('id')} track={t} sceneId={s.get('id')} />
+                      ))}
+                    </div>
+                    <button className="track-stop" data-info="Stop this track's clip" onClick={() => engine.stopClip(t.get('id'))}><Icon name="stopOutline" size={11} /></button>
+                  </>}
             </div>
-            <button className="track-stop" data-info="Stop this track's clip" onClick={() => engine.stopClip(t.get('id'))}><Icon name="stopOutline" size={11} /></button>
-          </div>
-        ))}
+          )
+        })}
 
         <div className="track-col add-col">
           <div className="add-track-box">
             <button className="add-btn" onClick={() => addSynthTrack()} data-info="Add a synth track">＋ Synth</button>
             <button className="add-btn" onClick={() => addDrumTrack()} data-info="Add a drum track">＋ Drums</button>
+            <button className="add-btn" onClick={() => addAudio()} data-info="Add a blank audio track (import or record audio clips)">＋ Audio</button>
+            <button className="add-btn" onClick={() => addBus()} data-info="Add a bus — an fx-only track that other tracks send to">＋ Bus</button>
           </div>
         </div>
 

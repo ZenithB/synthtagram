@@ -81,7 +81,7 @@ export function ArrangementView() {
     if (headsRef.current) headsRef.current.style.transform = `translateY(${-e.currentTarget.scrollTop}px)`
   }
 
-  const trackArr = tracks.toArray()
+  const trackArr = tracks.toArray().filter(t => t.get('kind') !== 'bus')   // buses hold no clips
   const laneOf = (tid: string) => trackArr.findIndex(t => t.get('id') === tid)
   const totalBars = Math.max(33, Math.ceil(arrEndTicks() / BAR) + 9)
   const width = totalBars * zoom

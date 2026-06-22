@@ -35,6 +35,8 @@ type BuiltTrack = {
   meter: Tone.Meter
   sendA: Tone.Gain
   sendB: Tone.Gain
+  outNode: Tone.ToneAudioNode | null   // node this track's fader currently outputs to (null for buses until wired)
+  busSends: Map<string, Tone.Gain>     // per-bus send gains: busTrackId → gain (vol → gain → bus input)
   part: Tone.Part | null
   player: Tone.Player | null
   partKey: string | null
@@ -480,7 +482,10 @@ class Engine {
     })
     Tone.connect(prev, panner)
     Tone.connect(panner, vol)
-    vol.connect(this.master)
+    const isBus = t.get('kind') === 'bus'
+    // Buses route to their `output` target (master or another bus) in rewireBuses,
+    // after every track exists; normal tracks go straight to master.
+    if (!isBus) vol.connect(this.master)
     vol.connect(meter)
     // post-fader sends feed the return buses
     const sendA = new Tone.Gain(t.get('sendA') ?? 0)
@@ -489,6 +494,7 @@ class Engine {
     vol.connect(sendB)
     const rec: BuiltTrack = {
       id: tid, kind: t.get('kind'), inst, instOut, instMeter, fx, panner, vol, meter, sendA, sendB,
+      outNode: isBus ? null : this.master, busSends: new Map(),
       part: null, player: null, partKey: null, partStartTicks: 0, partLoopTicks: BAR,
       queuedKey: null, queuedPart: null, unobserve: null,
     }
@@ -496,6 +502,52 @@ class Engine {
     this.wireSends(rec)
     this.applyMuteSolo()
     return rec
+  }
+
+  /** A bus's input node (where sends + upstream-bus outputs land) = its passthrough. */
+  private busInputOf(busId: string): Tone.ToneAudioNode | null {
+    const r = this.built.get(busId)
+    return r && r.kind === 'bus' ? (r.inst.out as Tone.ToneAudioNode) : null
+  }
+
+  /**
+   * (Re)connect every bus's output to its target and every track's per-bus send.
+   * Idempotent + cheap; run after graph builds and on any output/send change.
+   * A delay-less Web-Audio cycle is dropped by the engine, so a user-confirmed
+   * feedback route is harmless here.
+   */
+  private rewireBuses() {
+    // 1) bus outputs → master or another bus's input
+    this.built.forEach(rec => {
+      if (rec.kind !== 'bus') return
+      const out = (trackById(rec.id)?.get('output') as string) || 'master'
+      const target = (out !== 'master' && this.busInputOf(out)) || this.master
+      if (rec.outNode !== target) {
+        if (rec.outNode) { try { rec.vol.disconnect(rec.outNode) } catch { /* ok */ } }
+        try { rec.vol.connect(target) } catch { /* ok */ }
+        rec.outNode = target
+      }
+    })
+    // 2) per-track bus sends (vol → gain → bus input). Lazily create a gain the
+    //    first time a send is non-zero; thereafter just ramp it.
+    const busIds = [...this.built.values()].filter(r => r.kind === 'bus').map(r => r.id)
+    this.built.forEach(rec => {
+      const sm = trackById(rec.id)?.get('sends') as Y.Map<number> | undefined
+      // drop sends to buses that no longer exist
+      rec.busSends.forEach((g, bid) => {
+        if (!busIds.includes(bid)) { try { g.disconnect() } catch { /* ok */ } try { rec.vol.disconnect(g) } catch { /* ok */ } g.dispose(); rec.busSends.delete(bid) }
+      })
+      for (const bid of busIds) {
+        if (bid === rec.id) continue
+        const level = (sm?.get(bid) as number) ?? 0
+        const g = rec.busSends.get(bid)
+        if (g) g.gain.rampTo(level, 0.02)
+        else if (level > 0) {
+          const inp = this.busInputOf(bid); if (!inp) continue
+          const ng = new Tone.Gain(level); rec.vol.connect(ng); ng.connect(inp); rec.busSends.set(bid, ng)
+        }
+      }
+    })
   }
 
   /** Mute = own mute OR (some track soloed AND this one isn't). Engine-coordinated. */
@@ -565,6 +617,8 @@ class Engine {
       rec.meter.dispose()
       rec.sendA.dispose()
       rec.sendB.dispose()
+      rec.busSends.forEach(g => { try { g.disconnect() } catch { /* ok */ } g.dispose() })
+      rec.busSends.clear()
     } catch { /* dispose races are harmless */ }
     this.built.delete(rec.id)
   }
@@ -576,6 +630,7 @@ class Engine {
     tracks.forEach(t => {
       if (!this.built.has(t.get('id'))) this.buildTrack(t)
     })
+    this.rewireBuses()
     this.emit()
   }
 
@@ -591,6 +646,15 @@ class Engine {
     if (wasPlaying && this.transport.state === 'started' && this.mode === 'session') {
       this.startPartNow(tid, wasPlaying)
     }
+    // a rebuilt bus has a fresh input node — drop any sends pointing at the old
+    // one so rewireBuses recreates them against the new input.
+    if (t?.get('kind') === 'bus') {
+      this.built.forEach(r => {
+        const g = r.id !== tid && r.busSends.get(tid)
+        if (g) { try { g.disconnect() } catch { /* ok */ } try { r.vol.disconnect(g) } catch { /* ok */ } g.dispose(); r.busSends.delete(tid) }
+      })
+    }
+    this.rewireBuses()
     this.emit()
   }
 
@@ -625,9 +689,12 @@ class Engine {
           else if (key === 'solo') this.applyMuteSolo()
           else if (key === 'sendA') rec.sendA.gain.rampTo(t.get('sendA') ?? 0, 0.03)
           else if (key === 'sendB') rec.sendB.gain.rampTo(t.get('sendB') ?? 0, 0.03)
+          else if (key === 'output' || key === 'sends') this.rewireBuses()
           else if (key === 'inst' || key === 'fx') structural.add(tid)
           else if (key === 'midifx') this.refreshPart(rec)
         })
+      } else if (path[1] === 'sends') {
+        this.rewireBuses()
       } else if (path[1] === 'midifx') {
         this.refreshPart(rec)
       } else if (path[1] === 'inst') {

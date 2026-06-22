@@ -28,6 +28,25 @@ export function Toasts() {
   )
 }
 
+// ---------------- feedback-loop warning (routing a cycle) ----------------
+export function FeedbackModal() {
+  const prompt = useUI(s => s.feedbackPrompt)
+  if (!prompt) return null
+  const close = () => setUI({ feedbackPrompt: null })
+  return (
+    <Modal title="⚠ Feedback loop" onClose={close} width={400}>
+      <div className="feedback-modal">
+        <p>{prompt.msg}</p>
+        <p className="feedback-sub">Routing a signal back into itself can build up quickly. Continue anyway, or undo this change?</p>
+        <div className="feedback-actions">
+          <button className="export-btn ghost" onClick={close}>Undo</button>
+          <button className="export-btn record" onClick={() => { prompt.apply(); close() }}>Continue anyway</button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
 // ---------------- audio-failure banner (persistent, must be acted on) ----------------
 export function AudioErrorBanner() {
   const err = useUI(s => s.audioError)

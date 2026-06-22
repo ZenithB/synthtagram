@@ -12,7 +12,7 @@ export type ClipRef =
   | { kind: 'session'; trackId: string; sceneId: string }
   | { kind: 'arr'; id: string }
 
-export type TrackKind = 'synth' | 'drum' | 'audio'
+export type TrackKind = 'synth' | 'drum' | 'audio' | 'bus'
 
 // Palette: olive-gold primary, terracotta + teal secondaries, warm neutrals.
 export const CLIP_COLORS = [

@@ -5,7 +5,7 @@ import { ClipRef, CLIP_COLORS, BAR } from '../types'
 import {
   addTrack, addScene, clipKey, clips, duplicateClipTo, getClipMap, clipToJSON,
   jsonToClipMap, loadProject, mutate, scenes, setInstrument, trackById, ClipJSON, TrackJSON,
-  addAudioTrack, createAudioClip,
+  addAudioTrack, createAudioClip, addBusTrack, tracks, busCanReach, setTrackOutput, setBusSend,
 } from '../state/doc'
 import { setUI, toast, ui } from '../state/store'
 import { setPresence } from '../state/net'
@@ -115,6 +115,44 @@ export function addDrumTrack(kitName?: string): string {
   })
   selectTrack(id)
   return id
+}
+
+export function addAudio(): string {
+  const n = tracks.toArray().filter(t => t.get('kind') === 'audio').length + 1
+  const id = addAudioTrack(`Audio ${n}`, nextColor())
+  selectTrack(id)
+  return id
+}
+
+export function addBus(): string {
+  const n = tracks.toArray().filter(t => t.get('kind') === 'bus').length + 1
+  const id = addBusTrack(`Bus ${n}`, nextColor())
+  selectTrack(id)
+  return id
+}
+
+/**
+ * Set a bus output, popping the themed feedback-loop warning first if the route
+ * would create an audio cycle. On Continue we apply anyway (Web Audio drops a
+ * delay-less cycle, so it's harmless); on Undo we leave the route unchanged.
+ */
+export function attemptSetOutput(trackId: string, target: string) {
+  const name = trackById(trackId)?.get('name') ?? 'bus'
+  if (target !== 'master' && (target === trackId || busCanReach(target, trackId))) {
+    const to = trackById(target)?.get('name') ?? 'that bus'
+    setUI({ feedbackPrompt: { msg: `Routing “${name}” → “${to}” creates a feedback loop.`, apply: () => setTrackOutput(trackId, target) } })
+  } else setTrackOutput(trackId, target)
+}
+
+/** Set a bus-send level; only a send FROM a bus can loop, so guard those. */
+export function attemptBusSend(trackId: string, busId: string, level: number) {
+  const src = trackById(trackId)
+  const isBusSource = src?.get('kind') === 'bus'
+  if (level > 0 && isBusSource && (busId === trackId || busCanReach(busId, trackId))) {
+    const name = src?.get('name') ?? 'bus'
+    const to = trackById(busId)?.get('name') ?? 'that bus'
+    setUI({ feedbackPrompt: { msg: `“${name}” sending to “${to}” creates a feedback loop.`, apply: () => setBusSend(trackId, busId, level) } })
+  } else setBusSend(trackId, busId, level)
 }
 
 // ---------------- browser items → project ----------------

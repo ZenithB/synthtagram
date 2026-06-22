@@ -15,7 +15,7 @@ export function autoTargets(trackId: string | null): AutoTarget[] {
   const out: AutoTarget[] = []
   out.push({ key: 'mix||gain', label: 'Volume' }, { key: 'mix||pan', label: 'Pan' })
   out.push({ key: 'send||A', label: 'Send A' }, { key: 'send||B', label: 'Send B' })
-  if (t.get('kind') !== 'drum') {
+  if (t.get('kind') !== 'drum' && t.get('kind') !== 'bus' && t.get('kind') !== 'audio') {
     instSchema(t.get('inst').get('type')).params.filter(p => !p.steps).forEach(p =>
       out.push({ key: `inst||${p.key}`, label: `Inst · ${p.label}` }))
   }
