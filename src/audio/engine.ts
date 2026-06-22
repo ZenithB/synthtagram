@@ -65,6 +65,7 @@ class Engine {
   audioLoad = { avg: 0, peak: 0, underrun: 0, supported: false }
   private metro!: Tone.Synth
   private rebuildTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private fxRebuildTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private partTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private arrTimer: ReturnType<typeof setTimeout> | null = null
   private pendingRec = new Map<number, { clipMap: Y.Map<any>; startInClip: number; vel: number }>()
@@ -639,12 +640,13 @@ class Engine {
     const t = trackById(tid)
     const old = this.built.get(tid)
     const wasPlaying = old?.partKey ?? null
+    const wasAnchor = old?.partStartTicks ?? 0
     if (old) this.disposeTrack(old)
     if (!t) { this.emit(); return }
     this.buildTrack(t)
-    // resume the session clip that was playing, in phase with the transport
+    // resume the session clip that was playing, preserving its exact phase
     if (wasPlaying && this.transport.state === 'started' && this.mode === 'session') {
-      this.startPartNow(tid, wasPlaying)
+      this.startPartNow(tid, wasPlaying, wasAnchor)
     }
     // a rebuilt bus has a fresh input node — drop any sends pointing at the old
     // one so rewireBuses recreates them against the new input.
@@ -667,12 +669,61 @@ class Engine {
     }, 60))
   }
 
+  private scheduleFxRebuild(tid: string) {
+    const prev = this.fxRebuildTimers.get(tid)
+    if (prev) clearTimeout(prev)
+    this.fxRebuildTimers.set(tid, setTimeout(() => {
+      this.fxRebuildTimers.delete(tid)
+      this.rebuildFxChain(tid)
+    }, 50))
+  }
+
+  /**
+   * Rebuild ONLY a track's effect chain, in place — the instrument, panner,
+   * fader, sends and the *playing clip* are all left running untouched. Adding,
+   * removing, reordering, bypassing or swapping an effect re-splices the fx nodes
+   * between instOut and the panner without restarting the part, so playback never
+   * skips or drifts out of time (the old behaviour rebuilt the whole track).
+   */
+  private rebuildFxChain(tid: string) {
+    const rec = this.built.get(tid)
+    const t = trackById(tid)
+    if (!rec || !t) return
+    // tear down the old fx nodes
+    rec.fx.forEach(bf => { try { bf.fx.dispose() } catch { /* ok */ } try { bf.out.dispose() } catch { /* ok */ } try { bf.meter.dispose() } catch { /* ok */ } })
+    // detach instOut's outputs (its meter tap + the old chain) and re-tap the meter
+    try { rec.instOut.disconnect() } catch { /* ok */ }
+    rec.instOut.connect(rec.instMeter)
+    // build the current chain and splice instOut → [fx…] → panner
+    const fx: BuiltFx[] = []
+    ;(t.get('fx') as Y.Array<Y.Map<any>>).forEach(f => {
+      if (f.get('on')) fx.push({
+        id: f.get('id'), type: f.get('type'),
+        fx: makeEffect(f.get('type'), (f.get('params') as Y.Map<number>).toJSON()),
+        out: new Tone.Volume(f.get('out') ?? 0),
+        meter: new Tone.Meter({ smoothing: 0.8 }),
+      })
+    })
+    let prev: any = rec.instOut
+    fx.forEach(bf => {
+      Tone.connect(prev, bf.fx.node)
+      if (bf.fx.detect) Tone.connect(prev, bf.fx.detect)
+      Tone.connect(bf.fx.node, bf.out)
+      bf.out.connect(bf.meter)
+      prev = bf.out
+    })
+    Tone.connect(prev, rec.panner)
+    rec.fx = fx
+    this.emit()
+  }
+
   // ---------------- doc observers ----------------
 
   private onTracksDeep = (events: Y.YEvent<any>[]) => {
     if (!this.started) return
     let membership = false
-    const structural = new Set<string>()
+    const structural = new Set<string>()   // full track rebuild (instrument swap)
+    const fxDirty = new Set<string>()       // fx-chain-only rebuild (no part restart)
     for (const ev of events) {
       const path = ev.path
       if (path.length === 0) { membership = true; continue }
@@ -690,7 +741,8 @@ class Engine {
           else if (key === 'sendA') rec.sendA.gain.rampTo(t.get('sendA') ?? 0, 0.03)
           else if (key === 'sendB') rec.sendB.gain.rampTo(t.get('sendB') ?? 0, 0.03)
           else if (key === 'output' || key === 'sends') this.rewireBuses()
-          else if (key === 'inst' || key === 'fx') structural.add(tid)
+          else if (key === 'inst') structural.add(tid)
+          else if (key === 'fx') fxDirty.add(tid)
           else if (key === 'midifx') this.refreshPart(rec)
         })
       } else if (path[1] === 'sends') {
@@ -722,9 +774,9 @@ class Engine {
               const v = (ev.target as Y.Map<number>).get(key)
               if (typeof v === 'number') bf.fx.set(key, v)
             })
-          } else structural.add(tid)
+          } else fxDirty.add(tid)
         } else if (path.length === 3) {
-          // direct keys on an fx map: 'out' is a live gain; 'on'/'type' rebuild
+          // direct keys on an fx map: 'out' is a live gain; 'on'/'type' re-splice
           const fxMap = (t.get('fx') as Y.Array<Y.Map<any>>).get(path[2] as number)
           const bf = fxMap && rec.fx.find(f => f.id === fxMap.get('id'))
           let rebuild = false
@@ -732,12 +784,15 @@ class Engine {
             if (key === 'out' && bf) bf.out.volume.rampTo(fxMap!.get('out') ?? 0, 0.03)
             else rebuild = true
           })
-          if (rebuild || !bf) structural.add(tid)
-        } else structural.add(tid)
+          if (rebuild || !bf) fxDirty.add(tid)
+        } else fxDirty.add(tid)   // add / remove / reorder an effect
       }
     }
     if (membership) this.buildAll()
     structural.forEach(tid => this.scheduleRebuildTrack(tid))
+    // fx-chain changes re-splice in place (no part restart); skip if a full
+    // rebuild is already queued for that track.
+    fxDirty.forEach(tid => { if (!structural.has(tid)) this.scheduleFxRebuild(tid) })
   }
 
   private onClipsShallow = (ev: Y.YMapEvent<any>) => {
@@ -994,7 +1049,7 @@ class Engine {
     }
   }
 
-  private startPartNow(tid: string, key: string) {
+  private startPartNow(tid: string, key: string, anchorTicks?: number) {
     const rec = this.built.get(tid)
     const clipMap = clips.get(key) as Y.Map<any> | undefined
     if (!rec || !clipMap) return
@@ -1002,10 +1057,16 @@ class Engine {
     const part = this.makePart(rec, clipMap)
     const loopLen = clipMap.get('len') ?? BAR
     const nowTicks = this.transport.ticks
-    part.start(0, `${nowTicks % loopLen}i`)
+    // Anchor the loop so the clip keeps its phase. Resuming after a rebuild reuses
+    // the previous anchor; otherwise snap to the loop boundary at/under now. The
+    // part starts AT the anchor with NO offset, so its position at `now` resolves
+    // to (now - anchor) mod loopLen — grid-aligned. (The old code passed both a
+    // 0 start time AND an offset, double-counting the phase → playback drifted.)
+    const anchor = anchorTicks != null ? anchorTicks : nowTicks - (((nowTicks % loopLen) + loopLen) % loopLen)
+    part.start(`${anchor}i`)
     rec.part = part
     rec.partKey = key
-    rec.partStartTicks = nowTicks - (nowTicks % loopLen)
+    rec.partStartTicks = anchor
     rec.partLoopTicks = loopLen
     this.observeClipForPart(rec, key, clipMap)
   }
