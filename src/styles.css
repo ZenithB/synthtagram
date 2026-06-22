@@ -222,6 +222,9 @@ button { cursor: pointer; background: none; border: none; }
 .fader { position: relative; width: 14px; background: var(--bg0); border: 1px solid var(--border); border-radius: 7px; cursor: ns-resize; overflow: hidden; }
 .fader-fill { position: absolute; bottom: 0; left: 0; right: 0; background: color-mix(in srgb, var(--accent) 45%, transparent); }
 .fader-handle { position: absolute; left: 1px; right: 1px; height: 7px; background: var(--text); border-radius: 3px; }
+.hfader { position: relative; height: 8px; background: var(--bg0); border: 1px solid var(--border); border-radius: 5px; cursor: ew-resize; overflow: hidden; flex: 1; min-width: 44px; }
+.hfader-fill { position: absolute; top: 0; bottom: 0; left: 0; background: color-mix(in srgb, var(--accent) 45%, transparent); }
+.hfader-handle { position: absolute; top: 1px; bottom: 1px; width: 5px; background: var(--text); border-radius: 2px; }
 .meter { width: 7px; background: var(--bg0); border: 1px solid var(--border); border-radius: 4px; position: relative; overflow: hidden; }
 .meter-fill { position: absolute; bottom: 0; left: 0; right: 0; background: var(--ok); transition: background 0.1s; }
 
@@ -268,11 +271,14 @@ button { cursor: pointer; background: none; border: none; }
 
 /* ---------------- arrangement ---------------- */
 .arrange { flex: 1; display: flex; min-height: 0; position: relative; background: var(--bg0); }
-.arr-heads { width: 148px; flex-shrink: 0; border-right: 1px solid var(--border); background: var(--bg1); }
-.arr-corner { height: 34px; display: flex; align-items: center; gap: 6px; padding: 0 8px; border-bottom: 1px solid var(--border); }
+.arr-heads { width: 168px; flex-shrink: 0; border-right: 1px solid var(--border); background: var(--bg1); overflow: hidden; }
+/* corner stays pinned over the headers as they translate-scroll under it */
+.arr-corner { height: 34px; display: flex; align-items: center; gap: 6px; padding: 0 8px; border-bottom: 1px solid var(--border); background: var(--bg1); position: relative; z-index: 1; }
 .arr-pos { font-variant-numeric: tabular-nums; font-size: 11px; color: var(--accent); }
-.arr-head { display: flex; align-items: center; gap: 6px; padding: 0 8px; border-bottom: 1px solid var(--border); border-left: 3px solid; cursor: pointer; }
+.arr-head { box-sizing: border-box; display: flex; flex-direction: column; justify-content: center; gap: 5px; padding: 5px 8px; border-bottom: 1px solid var(--border); border-left: 3px solid; cursor: pointer; background: var(--bg1); }
 .arr-head:hover { background: var(--bg2); }
+.arr-head-top { display: flex; align-items: center; gap: 6px; }
+.arr-head-mix { display: flex; align-items: center; gap: 7px; }
 .arr-head-name { flex: 1; font-weight: 600; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .arr-scroll { flex: 1; overflow: auto; position: relative; }
 .arr-inner { position: relative; min-height: 100%; }

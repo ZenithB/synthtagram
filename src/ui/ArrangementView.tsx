@@ -13,15 +13,18 @@ import {
 import { engine } from '../audio/engine'
 import { setUI, ui, useUI, toast } from '../state/store'
 import { useY, useRaf } from './hooks'
-import { openMenu, ColorRow, MenuItem, capturePointer } from './widgets'
+import { openMenu, ColorRow, MenuItem, capturePointer, Knob, HFader } from './widgets'
 import { selectClip } from './actions'
 import { Icon } from './icons'
 import { peersList, subscribeAwareness, awarenessVersion } from '../state/net'
 import { MIDI_LOOPS, PROGRESSIONS, progressionClip, clipInKey } from '../packs'
 import { loadLoop } from './actions'
 
-const LANE_H = 56
-const HEAD_W = 148
+const LANE_H = 74
+const HEAD_W = 168
+
+// Pan control spec (mirrors Session view): -1 full left … +1 full right.
+const PAN_SPEC = { key: 'pan', label: 'Pan', min: -1, max: 1, def: 0, fmt: (v: number) => (Math.abs(v) < 0.02 ? 'C' : v < 0 ? `${Math.round(-v * 50)}L` : `${Math.round(v * 50)}R`) }
 
 function usePresence() {
   return useSyncExternalStore(subscribeAwareness, awarenessVersion)
@@ -67,6 +70,13 @@ export function ArrangementView() {
   const z = uiZoom || 1
   const [drag, setDrag] = useState<DragState>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
+  const headsRef = useRef<HTMLDivElement>(null)
+  // Keep the left track headers in vertical lockstep with the lane area: they
+  // live in a separate (non-scrolling) column, so translate their inner content
+  // to mirror the scroll position. The corner stays pinned (like the ruler).
+  const onScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    if (headsRef.current) headsRef.current.style.transform = `translateY(${-e.currentTarget.scrollTop}px)`
+  }
 
   const trackArr = tracks.toArray()
   const laneOf = (tid: string) => trackArr.findIndex(t => t.get('id') === tid)
@@ -205,7 +215,7 @@ export function ArrangementView() {
 
   return (
     <div className="arrange" onWheel={onWheel}>
-      <div className="arr-heads">
+      <div className="arr-heads" style={{ width: HEAD_W }}>
         <div className="arr-corner">
           <button
             className={`tbtn ${loopOn ? 'on' : ''}`}
@@ -214,16 +224,27 @@ export function ArrangementView() {
           >LOOP</button>
           <span className="arr-pos">{ticksToBBS(Math.round(engine.arrSeekTicks))}</span>
         </div>
-        {trackArr.map(t => (
-          <div key={t.get('id')} className="arr-head" style={{ height: LANE_H, borderLeftColor: CLIP_COLORS[t.get('color') ?? 0] }}
-            onClick={() => { setUI({ selTrackId: t.get('id'), detailOpen: true, detailTab: 'devices' }) }}>
-            <span className="arr-head-name">{t.get('name')}</span>
-            <button className={`tbtn mute ${t.get('mute') ? 'on' : ''}`} onClick={e => { e.stopPropagation(); setTrackMix(t.get('id'), { mute: !t.get('mute') }) }}>M</button>
-          </div>
-        ))}
+        <div className="arr-heads-inner" ref={headsRef}>
+          {trackArr.map(t => {
+            const tid = t.get('id')
+            return (
+              <div key={tid} className="arr-head" style={{ height: LANE_H, borderLeftColor: CLIP_COLORS[t.get('color') ?? 0] }}
+                onClick={() => { setUI({ selTrackId: tid, detailOpen: true, detailTab: 'devices' }) }}>
+                <div className="arr-head-top">
+                  <span className="arr-head-name">{t.get('name')}</span>
+                  <button className={`tbtn mute ${t.get('mute') ? 'on' : ''}`} onClick={e => { e.stopPropagation(); setTrackMix(tid, { mute: !t.get('mute') }) }}>M</button>
+                </div>
+                <div className="arr-head-mix" onClick={e => e.stopPropagation()} onDoubleClick={e => e.stopPropagation()}>
+                  <HFader value={t.get('gain') ?? 0} onChange={v => setTrackMix(tid, { gain: v })} />
+                  <Knob spec={PAN_SPEC} value={t.get('pan') ?? 0} onChange={v => setTrackMix(tid, { pan: v })} size={20} />
+                </div>
+              </div>
+            )
+          })}
+        </div>
       </div>
 
-      <div className="arr-scroll" ref={scrollRef}>
+      <div className="arr-scroll" ref={scrollRef} onScroll={onScroll}>
         <div className="arr-inner" style={{ width }} onPointerMove={onPointerMove} onPointerUp={onPointerUp}>
           <div
             className="arr-ruler"

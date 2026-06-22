@@ -126,6 +126,33 @@ export function Fader({ value, min = -48, max = 6, onChange, height = 76 }: {
   )
 }
 
+// Horizontal sibling of Fader — for narrow track heads where a vertical fader
+// won't fit. Same dB range/snap and the same window-level drag handling.
+export function HFader({ value, min = -48, max = 6, onChange, width = 100 }: {
+  value: number; min?: number; max?: number; onChange: (v: number) => void; width?: number
+}) {
+  const norm = clamp((value - min) / (max - min), 0, 1)
+  const ref = useRef<HTMLDivElement>(null)
+  const drag = (e: React.PointerEvent) => {
+    if (e.button !== 0) return
+    e.preventDefault(); e.stopPropagation()
+    const rect = ref.current!.getBoundingClientRect()
+    const apply = (ev: PointerEvent) => {
+      const n = clamp((ev.clientX - rect.left) / rect.width, 0, 1)
+      onChange(Math.round((min + n * (max - min)) * 10) / 10)
+    }
+    apply(e.nativeEvent)
+    beginVDrag(apply)
+  }
+  return (
+    <div ref={ref} className="hfader" style={{ width }} onPointerDown={drag}
+      onDoubleClick={e => { e.stopPropagation(); onChange(0) }} data-info="Track volume (dB). Drag left/right; double-click resets to 0">
+      <div className="hfader-fill" style={{ width: `${norm * 100}%` }} />
+      <div className="hfader-handle" style={{ left: `calc(${norm * 100}% - 3px)` }} />
+    </div>
+  )
+}
+
 export function MeterBar({ getDb, height = 76 }: { getDb: () => number; height?: number }) {
   const ref = useRef<HTMLDivElement>(null)
   useRaf(() => {
