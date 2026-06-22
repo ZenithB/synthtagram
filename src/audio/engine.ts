@@ -722,7 +722,20 @@ class Engine {
     const events = this.buildEvents(trackById(rec.id), clipMap)
     const part = new Tone.Part((time, ev: any) => {
       if (ev.pr < 1 && Math.random() > ev.pr) return
-      rec.inst.trigger(ev.p, Math.max(0.02, Tone.Ticks(ev.d).toSeconds()), time, ev.v)
+      // Humanize: random per-note micro-variation, re-rolled every time the note
+      // plays. 0 = dead on the grid; at 100% up to ±10% of a beat of timing
+      // jitter and ±10% of velocity (scaled linearly by the knob). Read live so
+      // the knob takes effect on the next note without rebuilding parts. Live
+      // played notes don't pass through here, so the performer is never jittered.
+      const h = (meta.get('humanize') as number) ?? 0
+      let when = time
+      let vel = ev.v
+      if (h > 0) {
+        const jitterTicks = (Math.random() * 2 - 1) * 0.1 * (BAR / 4) * h  // ±10% of a beat
+        when = Math.max(Tone.immediate(), time + Tone.Ticks(jitterTicks).toSeconds())
+        vel = clamp(ev.v + (Math.random() * 2 - 1) * 0.1 * h, 0.02, 1)
+      }
+      rec.inst.trigger(ev.p, Math.max(0.02, Tone.Ticks(ev.d).toSeconds()), when, vel)
     }, events as any)
     part.loop = true
     part.loopStart = 0

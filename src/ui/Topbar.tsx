@@ -2,7 +2,7 @@
 
 import React, { useRef, useState, useSyncExternalStore } from 'react'
 import { LAUNCH_Q_OPTIONS, clamp } from '../types'
-import { meta, setBpm, setSwing, setTitle, setKeyScale, setLaunchQ } from '../state/doc'
+import { meta, setBpm, setSwing, setHumanize, setTitle, setKeyScale, setLaunchQ } from '../state/doc'
 import { undoMgr } from '../state/undo'
 import { engine } from '../audio/engine'
 import { setUI, ui, useUI } from '../state/store'
@@ -15,7 +15,8 @@ import { captureToClip, setKbdEnabled, isKbdEnabled } from '../audio/input'
 import { peersList, subscribeAwareness, awarenessVersion } from '../state/net'
 import { ticksToBBS } from '../types'
 
-const SWING_SPEC = { key: 'swing', label: 'Swing', min: 0, max: 0.6, def: 0, fmt: (v: number) => `${Math.round(v * 100)}%` }
+const SWING_SPEC = { key: 'swing', label: 'Swing', min: 0, max: 1, def: 0, fmt: (v: number) => `${Math.round(v * 100)}%` }
+const HUMAN_SPEC = { key: 'humanize', label: 'Human', min: 0, max: 1, def: 0, fmt: (v: number) => `${Math.round(v * 100)}%` }
 
 function PlayButton() {
   const ref = useRef<HTMLButtonElement>(null)
@@ -118,6 +119,7 @@ export function Topbar() {
         <NumberDrag value={meta.get('bpm') ?? 120} min={40} max={240} step={1} onChange={setBpm} info="Tempo: drag vertically, double-click to type" />
         <button className="tbtn" onClick={tap} data-info="Tap tempo — tap 3+ times">TAP</button>
         <Knob spec={SWING_SPEC} value={meta.get('swing') ?? 0} onChange={setSwing} size={26} />
+        <Knob spec={HUMAN_SPEC} value={meta.get('humanize') ?? 0} onChange={setHumanize} size={26} />
       </div>
 
       <div className="tgroup">

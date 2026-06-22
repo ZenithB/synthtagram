@@ -543,7 +543,7 @@ export function progressionClip(prog: Progression, rootPc: number): ClipJSON {
 // =====================================================================
 
 export const DEFAULT_PROJECT: ProjectJSON = {
-  meta: { title: 'Untitled Jam', bpm: 120, swing: 0, root: 9, scale: 'minor', launchQ: 1 },
+  meta: { title: 'Untitled Jam', bpm: 120, swing: 0, humanize: 0, root: 9, scale: 'minor', launchQ: 1 },
   tracks: [
     { id: 'tDrums', name: 'Drums', color: 0, kind: 'drum', inst: { type: 'drum', params: DRUM_KITS[0].params }, fx: [{ type: 'comp', on: true, params: { thresh: -18, ratio: 4, attack: 0.01, release: 0.18 } }], gain: 0, pan: 0, mute: false, solo: false },
     { id: 'tBass', name: 'Bass', color: 6, kind: 'synth', inst: { type: 'mono', params: INST_PRESETS.find(p => p.name === 'Sub Bass')!.params }, fx: [], gain: -2, pan: 0, mute: false, solo: false },
