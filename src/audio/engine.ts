@@ -181,7 +181,7 @@ class Engine {
     t.PPQ = 96
     t.bpm.value = meta.get('bpm') ?? 120
     t.swing = meta.get('swing') ?? 0
-    t.swingSubdivision = '16n'
+    t.swingSubdivision = (meta.get('swingSubdivision') as any) ?? '16n'
 
     // Tone.Channel downmixes stereo input to mono (its PanVol has a 1-channel
     // input); use a plain stereo-preserving Volume for the master & returns.
@@ -673,6 +673,7 @@ class Engine {
         // tempo-synced delays follow the new tempo
         setTimeout(() => this.refreshDelays(), 150)
       } else if (key === 'swing') t.swing = meta.get('swing') ?? 0
+      else if (key === 'swingSubdivision') t.swingSubdivision = (meta.get('swingSubdivision') as any) ?? '16n'
       else if (key === 'masterGain') this.master.volume.rampTo(meta.get('masterGain') ?? 0, 0.05)
       else if (key === 'loopOn' || key === 'loopStart' || key === 'loopEnd') this.applyLoopRegion()
     })

@@ -69,7 +69,7 @@ export type TrackJSON = {
   lfos?: LfoJSON[]; macros?: MacroJSON[]; midifx?: MidiFxJSON[]
 }
 export type ProjectJSON = {
-  meta: { title: string; bpm: number; swing: number; humanize?: number; root: number; scale: string; launchQ: number; masterGain?: number; loopOn?: boolean; loopStart?: number; loopEnd?: number }
+  meta: { title: string; bpm: number; swing: number; swingSubdivision?: string; humanize?: number; root: number; scale: string; launchQ: number; masterGain?: number; loopOn?: boolean; loopStart?: number; loopEnd?: number }
   tracks: TrackJSON[]
   scenes: { id?: string; name: string }[]
   clips: Record<string, ClipJSON>
@@ -236,6 +236,7 @@ export function setMetaField(label: string, k: string, v: any) {
 export const setBpm = (v: number) => setMetaField('Change tempo', 'bpm', Math.round(v * 10) / 10)
 export const setSwing = (v: number) => setMetaField('Change swing', 'swing', v)
 export const setHumanize = (v: number) => setMetaField('Change humanize', 'humanize', v)
+export const setSwingSubdivision = (v: string) => setMetaField('Swing timing', 'swingSubdivision', v)
 export const setTitle = (v: string) => setMetaField('Rename project', 'title', v)
 export const setLaunchQ = (bars: number) => setMetaField('Launch quantize', 'launchQ', bars)
 export function setKeyScale(root: number, scale: string) {
@@ -927,6 +928,7 @@ export function exportProject(): ProjectJSON {
       title: meta.get('title') ?? 'Untitled Jam',
       bpm: meta.get('bpm') ?? 120,
       swing: meta.get('swing') ?? 0,
+      swingSubdivision: meta.get('swingSubdivision') ?? '16n',
       humanize: meta.get('humanize') ?? 0,
       root: meta.get('root') ?? 9,
       scale: meta.get('scale') ?? 'minor',

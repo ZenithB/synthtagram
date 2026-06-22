@@ -15,6 +15,7 @@ export type UIState = {
   detailHeight: number
   uiZoom: number
   gridTicks: number
+  drawLen: number
   drawMode: boolean
   drawProb: number
   snapScale: boolean
@@ -60,6 +61,7 @@ export const ui: UIState = {
   detailHeight: savedHeight,
   uiZoom: savedZoom,
   gridTicks: STEP16,
+  drawLen: STEP16,
   drawMode: false,
   drawProb: 1,
   snapScale: false,

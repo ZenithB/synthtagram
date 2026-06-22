@@ -90,6 +90,7 @@ type Drag =
 export function PianoRoll() {
   const selClip = useUI(s => s.selClip)
   const gridTicks = useUI(s => s.gridTicks)
+  const drawLen = useUI(s => s.drawLen)
   const drawMode = useUI(s => s.drawMode)
   const snapScale = useUI(s => s.snapScale)
   const lane = useUI(s => s.lane)
@@ -110,6 +111,7 @@ export function PianoRoll() {
   const sel = useRef<Set<string>>(new Set())
   const dragRef = useRef<Drag>(null)
   const hoverRef = useRef<{ tick: number; pitch: number } | null>(null)
+  const cursorRef = useRef('default')
   const autoPaint = useRef<Map<number, number> | null>(null)
   const autoMode = !!autoTarget
 
@@ -420,7 +422,7 @@ export function PianoRoll() {
     let p = pitch
     if (!isDrum && snapScale) p = snapToScale(p, root, scaleId)
     const s = floorT(tick)
-    const id = addNote(clipMap, { p, s, d: gridTicks, v: ui.velo, pr: ui.drawProb })
+    const id = addNote(clipMap, { p, s, d: ui.drawLen, v: ui.velo, pr: ui.drawProb })
     sel.current = new Set([id])
     engine.previewOn(trackId, p, ui.velo)
     setTimeout(() => engine.previewOff(trackId, p), 180)
@@ -520,7 +522,15 @@ export function PianoRoll() {
     const d = dragRef.current
     if (!d || !clipMap) {
       const loc = clipMap ? locate(e) : null
-      if (loc && !loc.inLane && !loc.inKeys) hoverRef.current = { tick: loc.tick, pitch: loc.pitch }
+      // hover: a resize cursor when over a note's right edge (same hit-test the
+      // resize-drag uses), default everywhere else.
+      let cur = 'default'
+      if (loc && !loc.inLane && !loc.inKeys) {
+        hoverRef.current = { tick: loc.tick, pitch: loc.pitch }
+        const hit = hitNote(loc.tick, loc.pitch)
+        if (hit && (hit[1].s + hit[1].d - loc.tick) * (view.current.pxPerBar / BAR) <= 5) cur = 'ew-resize'
+      }
+      if (cursorRef.current !== cur && canvasRef.current) { canvasRef.current.style.cursor = cur; cursorRef.current = cur }
       return
     }
     const loc = locate(e)
@@ -828,6 +838,12 @@ export function PianoRoll() {
         <label className="roll-field" data-info="Grid resolution for drawing & snapping">
           Grid
           <select value={gridTicks} onChange={e => setUI({ gridTicks: +e.target.value })}>
+            {GRID_OPTIONS.map(g => <option key={g.label} value={g.ticks}>{g.label}</option>)}
+          </select>
+        </label>
+        <label className="roll-field" data-info="Length of newly drawn notes">
+          Length
+          <select value={drawLen} onChange={e => setUI({ drawLen: +e.target.value })}>
             {GRID_OPTIONS.map(g => <option key={g.label} value={g.ticks}>{g.label}</option>)}
           </select>
         </label>

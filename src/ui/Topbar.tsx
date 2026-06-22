@@ -2,7 +2,7 @@
 
 import React, { useRef, useState, useSyncExternalStore } from 'react'
 import { LAUNCH_Q_OPTIONS, clamp } from '../types'
-import { meta, setBpm, setSwing, setHumanize, setTitle, setKeyScale, setLaunchQ } from '../state/doc'
+import { meta, setBpm, setSwing, setHumanize, setSwingSubdivision, setTitle, setKeyScale, setLaunchQ } from '../state/doc'
 import { undoMgr } from '../state/undo'
 import { engine } from '../audio/engine'
 import { setUI, ui, useUI } from '../state/store'
@@ -17,6 +17,7 @@ import { ticksToBBS } from '../types'
 
 const SWING_SPEC = { key: 'swing', label: 'Swing', min: 0, max: 1, def: 0, fmt: (v: number) => `${Math.round(v * 100)}%` }
 const HUMAN_SPEC = { key: 'humanize', label: 'Human', min: 0, max: 1, def: 0, fmt: (v: number) => `${Math.round(v * 100)}%` }
+const SWING_SUBS = [{ label: '1/4 note', val: '4n' }, { label: '1/8 note', val: '8n' }, { label: '1/16 note', val: '16n' }]
 
 function PlayButton() {
   const ref = useRef<HTMLButtonElement>(null)
@@ -118,7 +119,15 @@ export function Topbar() {
         <label className="tlabel" data-info="Tempo — drag the number or tap">BPM</label>
         <NumberDrag value={meta.get('bpm') ?? 120} min={40} max={240} step={1} onChange={setBpm} info="Tempo: drag vertically, double-click to type" />
         <button className="tbtn" onClick={tap} data-info="Tap tempo — tap 3+ times">TAP</button>
-        <Knob spec={SWING_SPEC} value={meta.get('swing') ?? 0} onChange={setSwing} size={26} />
+        <div
+          data-info="Swing groove — right-click to set its timing (1/4, 1/8, 1/16 note)"
+          onContextMenu={e => {
+            const cur = (meta.get('swingSubdivision') as string) ?? '16n'
+            openMenu(e, SWING_SUBS.map(s => ({ label: `${cur === s.val ? '✓ ' : '   '}Swing on ${s.label}`, fn: () => setSwingSubdivision(s.val) })))
+          }}
+        >
+          <Knob spec={SWING_SPEC} value={meta.get('swing') ?? 0} onChange={setSwing} size={26} />
+        </div>
         <Knob spec={HUMAN_SPEC} value={meta.get('humanize') ?? 0} onChange={setHumanize} size={26} />
       </div>
 
