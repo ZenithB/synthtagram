@@ -66,6 +66,7 @@ class Engine {
   private metro!: Tone.Synth
   private rebuildTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private fxRebuildTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private audioWatchdog: ReturnType<typeof setInterval> | null = null
   private partTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private arrTimer: ReturnType<typeof setTimeout> | null = null
   private pendingRec = new Map<number, { clipMap: Y.Map<any>; startInClip: number; vel: number }>()
@@ -118,6 +119,24 @@ class Engine {
     return this.startPromise
   }
 
+  /**
+   * Resume the AudioContext whenever it leaves the 'running' state while we
+   * intend to be playing — covers OS device changes, Bluetooth handoff, focus
+   * loss and power events that browsers respond to by suspending/interrupting
+   * the context. Listens to statechange + window focus/visibility, plus a slow
+   * periodic safety net. Only acts once the engine has actually started, so it
+   * never fights the initial autoplay gesture.
+   */
+  private setupAudioWatchdog() {
+    const ctx = Tone.getContext().rawContext as AudioContext
+    const resume = () => { if (this.started && ctx.state !== 'running') ctx.resume().catch(() => { /* ok */ }) }
+    try { ctx.addEventListener('statechange', resume) } catch { /* ok */ }
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) resume() })
+    window.addEventListener('focus', resume)
+    if (this.audioWatchdog) clearInterval(this.audioWatchdog)
+    this.audioWatchdog = setInterval(resume, 2000)
+  }
+
   private async doStart() {
     // Audio settings (user-tunable in the Audio Settings dialog, read here at boot):
     //  • oversample → run the graph at 88.2kHz (2x) for alias-free FM/distortion,
@@ -163,6 +182,20 @@ class Engine {
     // instead of the engine silently building a graph onto a dead context.
     if (raw.state !== 'running') throw new Error(`AudioContext stuck in "${raw.state}"`)
     this.sampleRate = Tone.getContext().sampleRate
+
+    // ---- playback reliability ----
+    // Widen the scheduling safety margin. Clip notes are scheduled this far ahead
+    // on Tone's clock; if the MAIN thread stalls (a heavy React render, a Yjs
+    // sync, a P2P burst, GC) longer than the window, the audio runs out of
+    // scheduled events and you hear a gap — while audio-thread load reads LOW
+    // (there's nothing to render during the gap). A bigger lookAhead absorbs
+    // those stalls. Live notes trigger via immediate() so they're unaffected, and
+    // note timing itself is unchanged — only the safety margin grows.
+    Tone.getContext().lookAhead = 0.2
+    // Keep the context alive: browsers suspend/interrupt it on audio-device
+    // changes, Bluetooth handoff, focus loss or power events, which silently kills
+    // playback with nothing to recover it. Auto-resume on every such transition.
+    this.setupAudioWatchdog()
 
     // Audio render-thread load monitor (Chromium only). Directly measures how
     // close the audio thread is to underrunning — exactly what causes glitches.
