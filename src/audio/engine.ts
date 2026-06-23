@@ -63,6 +63,13 @@ class Engine {
   // Audio render-thread load (Chromium `renderCapacity`), 0..1. This is the real
   // "about to glitch" signal — how full the audio thread's per-callback budget is.
   audioLoad = { avg: 0, peak: 0, underrun: 0, supported: false }
+  // Cross-browser render-thread health, fed by the sf-load AudioWorklet probe.
+  // rtf = audio produced ÷ real time (1 = keeping up, <1 = underrunning = the
+  // crackle). minRtf is the worst recent window (the dip you actually hear);
+  // glitches counts windows that dipped audibly. Works where renderCapacity
+  // doesn't (Safari/Firefox) and catches sub-second stalls the 1s renderCapacity
+  // average smooths away. See public/sf-load-worklet.js.
+  audioProbe = { supported: false, hasClock: false, rtf: 1, minRtf: 1, glitches: 0, maxGapMs: 0 }
   private metro!: Tone.Synth
   private rebuildTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private fxRebuildTimers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -100,6 +107,13 @@ class Engine {
 
   private startPromise: Promise<void> | null = null
   private noOversample = false
+  // ---- render-thread health probe (sf-load worklet) ----
+  private loadProbeReady: Promise<void> | null = null
+  private loadProbeNode: AudioWorkletNode | null = null
+  private loadProbeSink: GainNode | null = null
+  private probeWinHist: number[] = []   // recent rtf windows → rolling min (the dip)
+  private probeStartAt = 0              // ignore boot-transient glitches before this+grace
+  private glitchWarned = false          // one nudge to Audio settings per session
 
   ensureStarted(): Promise<void> {
     if (this.started) return Promise.resolve()
@@ -135,6 +149,72 @@ class Engine {
     window.addEventListener('focus', resume)
     if (this.audioWatchdog) clearInterval(this.audioWatchdog)
     this.audioWatchdog = setInterval(resume, 2000)
+  }
+
+  /**
+   * Cross-browser render-thread health probe. Loads the sf-load AudioWorklet
+   * (mirrors recorder.ts: static file in public/, 0-gain sink keeps it pulled)
+   * and turns its per-window quantum counts into a real-time-factor (rtf): how
+   * much audio the thread produced vs how much wall time passed. <1 means the
+   * thread fell behind and the output buffer underran — exactly the popping the
+   * user hears, and the thing FPS/renderCapacity miss (FPS is the wrong thread;
+   * renderCapacity is Chromium-only and 1s-averaged). Best-effort: any failure
+   * is swallowed so it can never block audio from starting.
+   */
+  private async setupLoadProbe() {
+    try {
+      const ctx = Tone.getContext().rawContext as AudioContext
+      if (!ctx.audioWorklet) return
+      if (!this.loadProbeReady) this.loadProbeReady = ctx.audioWorklet.addModule('/sf-load-worklet.js')
+      await this.loadProbeReady
+      if (this.loadProbeNode) return // already running (e.g. a re-entrant start)
+      const node = new AudioWorkletNode(ctx, 'sf-load', { numberOfInputs: 0, numberOfOutputs: 1, processorOptions: { reportMs: 250 } })
+      const sink = ctx.createGain()
+      sink.gain.value = 0
+      node.connect(sink)
+      sink.connect(ctx.destination)
+      let lastMsgT = 0
+      node.port.onmessage = (e: MessageEvent) => {
+        const d = e.data as { clock: number; quanta: number; winMs?: number; maxGapMs?: number }
+        let winSec = 0
+        if (d.clock) {
+          winSec = (d.winMs ?? 0) / 1000
+          this.audioProbe.hasClock = true
+          this.audioProbe.maxGapMs = Math.round(d.maxGapMs ?? 0)
+        } else {
+          const now = typeof performance !== 'undefined' ? performance.now() : 0
+          if (lastMsgT) winSec = (now - lastMsgT) / 1000
+          lastMsgT = now
+          this.audioProbe.hasClock = false
+        }
+        if (winSec <= 0.02) return
+        const produced = (d.quanta * 128) / (this.sampleRate || 44100)
+        const rtf = produced / winSec
+        this.audioProbe.supported = true
+        this.audioProbe.rtf = rtf
+        this.probeWinHist.push(rtf)
+        if (this.probeWinHist.length > 8) this.probeWinHist.shift() // ~2s rolling min
+        this.audioProbe.minRtf = Math.min(...this.probeWinHist)
+        // Below this fraction of real-time in a window the thread dropped audio
+        // (≈3.75ms lost per 250ms) = an audible glitch. With the audio-thread
+        // clock (hasClock) the number is jank-immune so we use a tight 0.985;
+        // the main-thread-timed fallback couples to UI jank, so only count
+        // clearly-deeper dips there to avoid false positives.
+        const glitchThresh = this.audioProbe.hasClock ? 0.985 : 0.95
+        // Skip the first ~2.5s after start — the boot transient (graph wiring,
+        // first GC, sample decode, React mount) under-runs harmlessly.
+        if (rtf < glitchThresh && Tone.now() - this.probeStartAt > 2.5) {
+          this.audioProbe.glitches++
+          if (!this.glitchWarned && this.audioProbe.glitches >= 3) {
+            this.glitchWarned = true
+            toast('Audio glitches detected — open Audio settings to add buffer headroom')
+          }
+        }
+      }
+      this.loadProbeNode = node
+      this.loadProbeSink = sink
+      this.probeStartAt = Tone.now()
+    } catch { /* probe is best-effort; never let it break audio */ }
   }
 
   private async doStart() {
@@ -212,6 +292,9 @@ class Engine {
         rc.start({ updateInterval: 1 })
       } catch { this.audioLoad.supported = false }
     }
+    // Cross-browser glitch detection (Safari/Firefox have no renderCapacity, and
+    // even on Chromium this catches the sub-second stalls the 1s average hides).
+    void this.setupLoadProbe()
 
     const t = this.transport
     t.PPQ = 96
@@ -1384,7 +1467,17 @@ class Engine {
       oversampling: this.sampleRate >= 88000,
       latencyMs: this.outputLatencyMs(),
       audioLoad: this.audioLoad,
+      probe: this.audioProbe,
     }
+  }
+
+  /** Clear the accumulated glitch count (after the user acts on a warning). */
+  resetGlitchCount() {
+    this.audioProbe.glitches = 0
+    this.glitchWarned = false
+    this.probeWinHist = []
+    this.audioProbe.minRtf = this.audioProbe.rtf
+    this.probeStartAt = Tone.now()
   }
 
   /** Returns true if the note was captured into a clip (recording path). */

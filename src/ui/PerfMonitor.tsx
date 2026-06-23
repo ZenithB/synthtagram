@@ -6,6 +6,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { engine } from '../audio/engine'
 import { getNetStats } from '../state/net'
+import { getAudioPrefs, setAudioPrefs, LatencyMode } from '../audio/prefs'
 import { setUI, useUI } from '../state/store'
 import { Icon } from './icons'
 
@@ -81,6 +82,31 @@ export function PerfMonitor() {
   const avgPct = Math.round((load?.avg ?? 0) * 100)
   const peakPct = Math.round((load?.peak ?? 0) * 100)
   const underPct = +(((load?.underrun ?? 0) * 100).toFixed(2))
+  // Cross-browser render-thread health (the metric that catches the crackle).
+  const probe = a?.probe
+  const keepPct = probe ? Math.min(100, Math.round((probe.minRtf ?? 1) * 100)) : 100
+  const keepTone: Tone3 = keepPct >= 99 ? 'ok' : keepPct >= 97 ? 'warn' : 'danger'
+  const glitches = probe?.glitches ?? 0
+  const struggling = glitches > 0 || keepPct < 99
+  // One-click mitigation: bump the output buffer a tier (most headroom first),
+  // and if already at the largest buffer, drop 2× oversampling (~halves CPU).
+  const fixBuffer = () => {
+    const p = getAudioPrefs()
+    if (p.latency !== 'playback') {
+      const next: LatencyMode = p.latency === 'interactive' ? 'balanced' : 'playback'
+      setAudioPrefs({ latency: next })
+    } else {
+      setAudioPrefs({ oversample: false })
+    }
+    engine.resetGlitchCount()
+    location.reload()
+  }
+  const fixLabel = (() => {
+    const p = getAudioPrefs()
+    if (p.latency !== 'playback') return 'Add buffer headroom & restart'
+    if (p.oversample) return 'Switch to Native (½ CPU) & restart'
+    return null // already maxed out on the easy wins
+  })()
   const fps = s?.fps ?? 0
   const fpsTone: Tone3 = fps >= 50 ? 'ok' : fps >= 35 ? 'warn' : 'danger'
   const memPct = s?.mem && s.mem.limit ? Math.round((s.mem.used / s.mem.limit) * 100) : 0
@@ -93,23 +119,50 @@ export function PerfMonitor() {
           <button className="icon-btn" onClick={close} data-info="Close"><Icon name="close" size={13} /></button>
         </div>
 
-        {/* AUDIO ENGINE — the load that actually causes glitches */}
+        {/* AUDIO ENGINE — the render-thread health that actually causes glitches */}
         <div className="perf-section">Audio engine</div>
-        {load?.supported ? (
+        {/* Cross-browser render-thread health — the metric that catches popping/
+            crackling on EVERY browser (FPS above is the wrong thread). */}
+        {probe?.supported ? (
           <>
-            <div className="perf-row wide" data-info="How full the audio render thread's per-callback budget is. Sustained high = dropouts. Lower it via Audio settings (bigger buffer / Native).">
-              <span className="perf-k">Audio-thread load</span>
+            <div className="perf-row wide" data-info="How well the audio render thread keeps up with real time. Below 100% means it can't render fast enough and the output buffer underruns — that's the popping/crackling. Works on every browser.">
+              <span className="perf-k">Keeping up{probe.hasClock === false ? ' (approx)' : ''}</span>
+              <span className={`perf-v ${keepTone}`}>{keepPct}%</span>
+            </div>
+            <Bar pct={keepPct} t={keepTone} />
+            <Row k="Glitch events" v={glitches} t={glitches > 0 ? 'danger' : 'ok'} info="Audible dropouts the render thread has dropped since audio started. Should be 0 — anything above means you heard crackles." />
+            {probe.hasClock && <Row k="Worst callback gap" v={`${probe.maxGapMs ?? 0} ms`} info="Longest pause between audio render callbacks (diagnostic). Large is normal with a big buffer; a sudden spike means the thread stalled." />}
+          </>
+        ) : (
+          <div className="perf-hint">Starting the render-thread probe… play something to begin measuring.</div>
+        )}
+
+        {struggling && (
+          <div className="perf-fix">
+            <div className="perf-hint danger" style={{ marginTop: 6 }}>
+              <b>The audio thread is struggling.</b> That's the crackling — it can't render fast enough for the current buffer. {fixLabel ? 'One click below trades a little latency for headroom (reloads to rebuild the engine; your project is saved).' : 'You\'re already on the largest buffer and Native rate — reduce track/effect count, or freeze busy tracks.'}
+            </div>
+            {fixLabel && (
+              <button className="export-btn record" onClick={fixBuffer} style={{ marginTop: 6 }}>
+                <Icon name="bolt" size={13} /> {fixLabel}
+              </button>
+            )}
+          </div>
+        )}
+
+        {load?.supported && (
+          <>
+            <div className="perf-row wide" data-info="Chromium-only: how full the audio thread's per-callback CPU budget is, averaged over 1s. Sustained high = dropouts. The Keeping-up metric above catches shorter stalls and works everywhere.">
+              <span className="perf-k">Audio-thread load <span className="perf-sub">· Chromium</span></span>
               <span className={`perf-v ${tone(avgPct, 70, 90)}`}>{avgPct}%</span>
             </div>
             <Bar pct={avgPct} t={tone(avgPct, 70, 90)} />
-            <Row k="Peak load" v={`${peakPct}%`} t={tone(peakPct, 80, 95)} info="Worst single render quantum in the last second." />
-            <Row k="Dropouts (underruns)" v={`${underPct}%`} t={underPct > 0 ? 'danger' : 'ok'} info="Fraction of the last second the audio thread missed its deadline — audible glitches. Should be 0." />
+            <Row k="Peak load" v={`${peakPct}%`} t={tone(peakPct, 80, 95)} info="Worst single render quantum in the last second (Chromium)." />
+            <Row k="Dropouts (underruns)" v={`${underPct}%`} t={underPct > 0 ? 'danger' : 'ok'} info="Fraction of the last second the audio thread missed its deadline (Chromium). Should be 0." />
           </>
-        ) : (
-          <div className="perf-hint">Audio-thread load needs Chrome/Edge — not available in this browser. FPS &amp; dropouts below still apply.</div>
         )}
         <Row k="Sample rate" v={a ? `${Math.round((a.sampleRate || 0) / 100) / 10} kHz${a.oversampling ? ' · 2×' : ''}` : '—'} />
-        <Row k="Output latency" v={a?.latencyMs ? `~${a.latencyMs} ms` : '—'} />
+        <Row k="Output latency" v={a?.latencyMs ? `~${a.latencyMs} ms` : '—'} info="Output buffer + device latency. A bigger buffer (Audio settings) raises this but stops crackling." />
         <Row k="Tracks · effects · returns" v={a ? `${a.tracks} · ${a.effects} · ${a.returns}` : '—'} info="Live node count — more tracks/effects = more audio-thread work." />
 
         {/* MAIN THREAD (CPU proxy) */}
@@ -145,7 +198,7 @@ export function PerfMonitor() {
         {s?.conn && <Row k="Connection" v={`${s.conn.type} · ${s.conn.downlink} Mbps · ${s.conn.rtt} ms rtt${s.conn.save ? ' · data-saver' : ''}`} info="Browser's estimate of your network link." />}
 
         <div className="export-divider" />
-        <div className="perf-hint">Seeing high audio-thread load or dropouts? Open <b>Audio settings</b> → increase the buffer or switch to Native to free up processing.</div>
+        <div className="perf-hint"><b>Keeping up</b> dipping below 100% or <b>Glitch events</b> climbing is the crackling. The buffer (Audio settings) is the fix: bigger buffer = more headroom; <b>Native</b> rate ~halves CPU. Frame rate below is the UI thread — unrelated to audio dropouts.</div>
       </div>
     </div>
   )
