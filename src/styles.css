@@ -308,6 +308,8 @@ button { cursor: pointer; background: none; border: none; }
 .auto-line { fill: none; stroke: var(--accent); stroke-width: 1.6; }
 .auto-flat { stroke: var(--dim); stroke-width: 1.2; stroke-dasharray: 3 3; }
 .auto-pt { fill: var(--accent); stroke: var(--bg0); stroke-width: 1; }
+.auto-grid { stroke: var(--border); stroke-width: 1; opacity: 0.5; pointer-events: none; }
+.auto-grid-label { fill: var(--dim); font-size: 8px; pointer-events: none; user-select: none; }
 .arr-scroll { flex: 1; overflow: auto; position: relative; }
 .arr-inner { position: relative; min-height: 100%; }
 .arr-ruler { height: 34px; position: relative; border-bottom: 1px solid var(--border); background: var(--bg1); cursor: pointer; position: sticky; top: 0; z-index: 5; }

@@ -2,7 +2,7 @@
 
 import React, { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { ParamSpec } from '../audio/schema'
+import { ParamSpec, normFromSpec, valueFromSpec } from '../audio/schema'
 import { clamp } from '../types'
 import { useRaf } from './hooks'
 import { Icon } from './icons'
@@ -39,13 +39,13 @@ export function beginVDrag(onMove: (e: PointerEvent) => void, onEnd?: () => void
 
 // ---------------- Knob ----------------
 
+// Curve lives in schema.ts (shared with automation lanes + engine). The knob
+// adds integer/enum snapping on top of the raw mapping.
 function toNorm(v: number, s: ParamSpec) {
-  if (s.exp) return (Math.log(v) - Math.log(s.min)) / (Math.log(s.max) - Math.log(s.min))
-  return (v - s.min) / (s.max - s.min)
+  return normFromSpec(s, v)
 }
 function fromNorm(n: number, s: ParamSpec) {
-  n = clamp(n, 0, 1)
-  let v = s.exp ? Math.exp(Math.log(s.min) + n * (Math.log(s.max) - Math.log(s.min))) : s.min + n * (s.max - s.min)
+  let v = valueFromSpec(s, n)
   if (s.int || s.steps) v = Math.round(v)
   return clamp(v, s.min, s.max)
 }

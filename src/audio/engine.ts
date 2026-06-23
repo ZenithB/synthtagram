@@ -14,7 +14,7 @@ import {
   isAudioClip,
 } from '../state/doc'
 import { makeInstrument, makeEffect, Inst, Fx } from './devices'
-import { instSchema, fxSchema, lfoShapeValue, LFO_DIV_TICKS, mixSpec, midiFxSchema } from './schema'
+import { instSchema, fxSchema, lfoShapeValue, LFO_DIV_TICKS, mixSpec, midiFxSchema, valueFromSpec } from './schema'
 import { getSampleBuffer, onSampleReady } from './samples'
 import { applyMidiFx as applyMidiFxData } from './midifx'
 import { getAudioPrefs } from './prefs'
@@ -491,7 +491,10 @@ class Engine {
       for (const [k, tg] of controlled) {
         const r = this.resolveTarget(t, rec, tg.dest, tg.fxId, tg.pkey)
         if (!r) continue
-        const base = autoNorm.has(k) ? r.spec.min + autoNorm.get(k)! * (r.spec.max - r.spec.min) : r.base
+        // Automation points are stored normalized [0,1]; map back along the
+        // spec curve so frequency/exp params track logarithmically (matching the
+        // lane's vertical scale and the knob). LFO offset stays a linear ± swing.
+        const base = autoNorm.has(k) ? valueFromSpec(r.spec, autoNorm.get(k)!) : r.base
         const off = (lfoOff.get(k) ?? 0) * (r.spec.max - r.spec.min) * 0.5
         r.setter(clamp(base + off, r.spec.min, r.spec.max))
         newActive.set(`${tid}|${k}`, { tid, dest: tg.dest, fxId: tg.fxId, pkey: tg.pkey })

@@ -3,7 +3,7 @@
 // paramId format "dest|fxId|pkey" matches the engine's resolveTarget addressing.
 
 import { trackById } from '../state/doc'
-import { instSchema, fxSchema, mixSpec, ParamSpec } from './schema'
+import { instSchema, fxSchema, mixSpec, ParamSpec, normFromSpec } from './schema'
 
 export type AutoTarget = { key: string; label: string }
 
@@ -48,7 +48,7 @@ export function paramSpecAndValue(trackId: string, key: string): { spec: ParamSp
   return { spec, value: ((fx.get('params') as any).get(pkey) as number) ?? spec.def }
 }
 
-/** Normalize a raw param value into [0,1] using its spec range (linear). */
+/** Normalize a raw param value into [0,1] along its spec curve (log for freq/exp). */
 export function normOf(spec: ParamSpec, value: number): number {
-  return spec.max === spec.min ? 0 : Math.max(0, Math.min(1, (value - spec.min) / (spec.max - spec.min)))
+  return normFromSpec(spec, value)
 }

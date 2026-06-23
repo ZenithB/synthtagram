@@ -9,7 +9,18 @@
 import React, { useRef, useState } from 'react'
 import { trackAutoPoints, setTrackAutoPoints } from '../state/doc'
 import { paramSpecAndValue, normOf } from '../audio/params'
+import { isLogSpec, normFromSpec } from '../audio/schema'
 import { beginVDrag } from './widgets'
+
+// Decade reference lines (10, 100, 1k…) inside a log spec's range — these are
+// what make the vertical scale visibly logarithmic for frequency/time/rate.
+function decadeLines(min: number, max: number): number[] {
+  const out: number[] = []
+  for (let d = Math.pow(10, Math.floor(Math.log10(min))); d <= max; d *= 10) {
+    if (d >= min) out.push(d)
+  }
+  return out.length > 1 ? out : []
+}
 
 export function AutomationLane({ trackId, paramKey, width, pxPerTick, height, snapTicks }: {
   trackId: string; paramKey: string; width: number; pxPerTick: number; height: number; snapTicks: number
@@ -21,6 +32,8 @@ export function AutomationLane({ trackId, paramKey, width, pxPerTick, height, sn
   const pts = trackAutoPoints(trackId, paramKey)
   const sv = paramSpecAndValue(trackId, paramKey)
   const baseNorm = sv ? normOf(sv.spec, sv.value) : 0.75
+  const logAxis = sv ? isLogSpec(sv.spec) : false
+  const grid = logAxis && sv ? decadeLines(sv.spec.min, sv.spec.max) : []
 
   const xOf = (t: number) => t * pxPerTick
   const yOf = (v: number) => (1 - v) * height
@@ -68,7 +81,16 @@ export function AutomationLane({ trackId, paramKey, width, pxPerTick, height, sn
 
   return (
     <svg ref={svgRef} className="auto-svg" width={width} height={height} onPointerDown={onDown}
-      data-info="Automation: click to add a point, drag to move, click a point to delete">
+      data-info={`Automation: click to add a point, drag to move, click a point to delete${logAxis ? ' · log (frequency) scale' : ''}`}>
+      {grid.map((gv, i) => {
+        const y = yOf(normFromSpec(sv!.spec, gv))
+        return (
+          <g key={`g${i}`}>
+            <line className="auto-grid" x1={0} y1={y} x2={width} y2={y} />
+            <text className="auto-grid-label" x={3} y={y - 2}>{sv!.spec.fmt ? sv!.spec.fmt(gv) : String(gv)}</text>
+          </g>
+        )
+      })}
       {pts.length === 0
         ? <line className="auto-flat" x1={0} y1={yOf(baseNorm)} x2={width} y2={yOf(baseNorm)} />
         : <>

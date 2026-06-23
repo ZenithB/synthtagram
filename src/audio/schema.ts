@@ -21,6 +21,29 @@ export const fmtPct = (v: number) => `${Math.round(v * 100)}%`
 export const fmtSemi = (v: number) => `${v > 0 ? '+' : ''}${Math.round(v)}st`
 export const fmtX = (v: number) => `${v.toFixed(2)}x`
 
+// ---- value ↔ position mapping --------------------------------------------
+// Single source of truth shared by knobs, automation lanes and the engine, so
+// all three agree. `exp` params (frequency, time, LFO rate) map on a LOG curve:
+// the perceptual midpoint sits at the geometric mean, so e.g. a filter-cutoff
+// automation lane is logarithmic in its vertical scale, matching the knob.
+const clamp01 = (n: number) => (n < 0 ? 0 : n > 1 ? 1 : n)
+/** True when a spec uses a logarithmic curve (needs min/max > 0 for the log). */
+export function isLogSpec(s: ParamSpec): boolean { return !!s.exp && s.min > 0 && s.max > 0 }
+
+/** Raw value → normalized [0,1] along the spec's curve (log for `exp` params). */
+export function normFromSpec(s: ParamSpec, v: number): number {
+  if (s.max === s.min) return 0
+  if (isLogSpec(s)) return clamp01((Math.log(v) - Math.log(s.min)) / (Math.log(s.max) - Math.log(s.min)))
+  return clamp01((v - s.min) / (s.max - s.min))
+}
+
+/** Normalized [0,1] → raw value along the spec's curve (log for `exp` params). */
+export function valueFromSpec(s: ParamSpec, n: number): number {
+  const c = clamp01(n)
+  if (isLogSpec(s)) return Math.exp(Math.log(s.min) + c * (Math.log(s.max) - Math.log(s.min)))
+  return s.min + c * (s.max - s.min)
+}
+
 const adsr = (a: number, d: number, s: number, r: number): ParamSpec[] => [
   { key: 'attack', label: 'Attack', min: 0.001, max: 2, def: a, exp: true, fmt: fmtSec },
   { key: 'decay', label: 'Decay', min: 0.01, max: 2, def: d, exp: true, fmt: fmtSec },
