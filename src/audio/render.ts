@@ -13,12 +13,17 @@ import * as Tone from 'tone'
 import { BAR, PPQ, Note, clamp } from '../types'
 import { exportProject, arrEndTicks, meta as docMeta, ProjectJSON, TrackJSON, ClipJSON } from '../state/doc'
 import { makeInstrument, makeEffect, Inst, Fx } from './devices'
-import { instSchema, fxSchema, mixSpec, lfoShapeValue, LFO_DIV_TICKS } from './schema'
+import { instSchema, fxSchema, mixSpec, lfoShapeValue, LFO_DIV_TICKS, valueFromSpec } from './schema'
 import { applyMidiFx } from './midifx'
 import { getSampleBuffer } from './samples'
-import { resample, encodeAudio, download, extFor, AudioFormat, Channels } from './encode'
+import { resample, encodeAudio, download, extFor, AudioFormat, Channels, OUT_SR } from './encode'
 import { toast } from '../state/store'
 
+// Preferred offline render rate (mirrors the engine's 2x oversampled graph). The
+// ACTUAL rate is taken from the live context at render time and falls back to
+// 44.1kHz — older Safari/WebKit reject an OfflineAudioContext at non-44.1k
+// rates, which silently broke every bounce while live playback (which has its
+// own rate fallback) kept working.
 const RENDER_SR = 88200
 
 function ticksToSec(ticks: number, bpm: number) {
@@ -211,7 +216,7 @@ function applyMod(ot: OffTrack, posTicks: number, audioTime: number, bpm: number
   for (const [k, tg] of controlled) {
     const r = resolveTarget(ot, tg.dest, tg.fxId, tg.pkey)
     if (!r) continue
-    const base = autoNorm.has(k) ? r.spec.min + autoNorm.get(k)! * (r.spec.max - r.spec.min) : r.base
+    const base = autoNorm.has(k) ? valueFromSpec(r.spec, autoNorm.get(k)!) : r.base
     const off = (lfoOff.get(k) ?? 0) * (r.spec.max - r.spec.min) * 0.5
     r.setter(clamp(base + off, r.spec.min, r.spec.max))
   }
@@ -229,8 +234,12 @@ async function renderBuffer(
   const root = project.meta.root ?? 9
   const scaleId = project.meta.scale ?? 'minor'
   const durSec = ticksToSec(lengthTicks, bpm) + 1.5 // reverb/release tail
+  // Render at the SAME rate the live engine is actually running (read before
+  // Tone.Offline swaps the context) so the bounce matches what's heard; if the
+  // browser won't open an OfflineAudioContext at that rate, fall back below.
+  const liveSr = Tone.getContext().sampleRate || RENDER_SR
 
-  const rendered = await Tone.Offline(async ({ transport }) => {
+  const build: Parameters<typeof Tone.Offline>[0] = async ({ transport }) => {
     transport.PPQ = PPQ
     transport.bpm.value = bpm
     transport.swing = project.meta.swing
@@ -322,7 +331,19 @@ async function renderBuffer(
     }, '32n', 0)
 
     transport.start(0.02, `${fromTicks}i`)
-  }, durSec, 2, RENDER_SR)
+  }
+
+  let rendered: Tone.ToneAudioBuffer
+  try {
+    rendered = await Tone.Offline(build, durSec, 2, liveSr)
+  } catch (e) {
+    // e.g. older Safari rejecting a non-44.1k OfflineAudioContext. Retry once at
+    // the universally-supported rate so the export still completes (resample()
+    // already normalises everything to 44.1kHz before encoding).
+    if (liveSr === OUT_SR) throw e
+    console.warn(`Offline render at ${liveSr}Hz failed (${(e as Error)?.message || e}); retrying at ${OUT_SR}Hz`)
+    rendered = await Tone.Offline(build, durSec, 2, OUT_SR)
+  }
 
   return rendered.get() as AudioBuffer
 }
@@ -377,7 +398,8 @@ export async function exportAudio(scope: RenderScope, opts: ExportOptions) {
     }
   } catch (e) {
     console.error(e)
-    toast('Export failed — see console')
+    const msg = (e as Error)?.message || String(e)
+    toast(`Export failed: ${msg.slice(0, 120)}`)
   }
 }
 
