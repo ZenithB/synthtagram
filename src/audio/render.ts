@@ -45,8 +45,9 @@ export type ExportOptions = {
 // What slice of the project a single render pass should capture.
 type RenderTarget =
   | { kind: 'mix' }
-  | { kind: 'track'; idx: number }    // one track only, dry (no return tails)
-  | { kind: 'return'; idx: number }   // one return bus, fed by every track's sends
+  | { kind: 'track'; idx: number }     // one track only, dry (no return/bus tails)
+  | { kind: 'return'; idx: number }    // one return bus, fed by every track's sends
+  | { kind: 'busstem'; busId: string } // one user bus, fed by every track's sends
 
 type OffFx = { id: string; type: string; dev: OffDevice; out: Tone.Volume }
 type OffTrack = {
@@ -149,7 +150,9 @@ function buildOffTrack(t: TrackJSON, master: Tone.Volume, returnInputs: Tone.Ton
   })
   Tone.connect(prev, panner)
   Tone.connect(panner, vol)
-  if (toMaster) vol.connect(master)
+  // Buses route their fader to `output` (master/another bus) in wireBuses, after
+  // every track exists; normal tracks feed master directly.
+  if (toMaster && t.kind !== 'bus') vol.connect(master)
   const sendA = new Tone.Gain(t.sendA ?? 0)
   const sendB = new Tone.Gain(t.sendB ?? 0)
   if (returnInputs.length) {
@@ -250,9 +253,9 @@ async function renderBuffer(
     const limiter = new Tone.Limiter(-1)
     master.chain(limiter, Tone.getDestination())
 
-    // return buses (none for a dry track stem; all for the mix; one for a return stem)
+    // return buses (none for a dry track/bus stem; all for the mix; one for a return stem)
     const returns: { input: Tone.ToneAudioNode }[] = []
-    const wantReturns = target.kind !== 'track'
+    const wantReturns = target.kind === 'mix' || target.kind === 'return'
     if (wantReturns) {
       ;(project.returns ?? []).forEach((r, ri) => {
         if (target.kind === 'return' && ri !== target.idx) { returns.push({ input: new Tone.Gain() }); return }
@@ -268,9 +271,11 @@ async function renderBuffer(
     const offTracks: OffTrack[] = []
     project.tracks.forEach((t, idx) => {
       if (target.kind === 'track' && idx !== target.idx) return
-      if (t.mute && target.kind === 'mix') return
-      // tracks feed master directly except on a return stem (where we want only the wet send)
-      const toMaster = target.kind !== 'return'
+      // muted tracks are silent in the full mix and in any bus they feed
+      if (t.mute && (target.kind === 'mix' || target.kind === 'busstem')) return
+      // tracks feed master only on the mix and their own dry stem; on a return/bus
+      // stem we want just the wet send, so they reach master only via the bus chain
+      const toMaster = target.kind === 'mix' || target.kind === 'track'
       const ot = buildOffTrack(t, master, returnInputs, toMaster)
       offTracks.push(ot)
 
@@ -322,6 +327,42 @@ async function renderBuffer(
         })
       }
     })
+
+    // ---- bus routing (mirrors the live engine's rewireBuses) ----
+    // User buses are aux/send buses: every track feeds master AND sends copies to
+    // bus inputs (the `sends` map); each bus's fader then routes to its `output`
+    // (master or another bus). Wired here, after every track/bus node exists.
+    if (target.kind === 'mix' || target.kind === 'busstem') {
+      const idOf = (o: OffTrack) => o.json.id ?? o.json.name
+      const buses = offTracks.filter(o => o.json.kind === 'bus')
+      const busInputOf = (busId: string): Tone.ToneAudioNode | null =>
+        buses.find(o => idOf(o) === busId)?.inst.out ?? null
+      // 1) bus outputs → master or another bus's input
+      buses.forEach(b => {
+        const out = b.json.output || 'master'
+        let dest: Tone.ToneAudioNode = (out !== 'master' && busInputOf(out)) || master
+        if (target.kind === 'busstem') {
+          // capture only THIS bus: it goes to master regardless of its real output;
+          // other buses stay off master (they reach it only via a bus→bus chain)
+          if (idOf(b) === target.busId) dest = master
+          else if (dest === master) return
+        }
+        Tone.connect(b.vol, dest)
+      })
+      // 2) per-track (and per-bus) sends → bus inputs
+      offTracks.forEach(ot => {
+        const sends = ot.json.sends
+        if (!sends) return
+        for (const [bid, level] of Object.entries(sends)) {
+          if (!level || bid === idOf(ot)) continue
+          const inp = busInputOf(bid)
+          if (!inp) continue
+          const g = new Tone.Gain(level)
+          Tone.connect(ot.vol, g)
+          Tone.connect(g, inp)
+        }
+      })
+    }
 
     // per-frame modulation: sidechain ducking, LFOs, and (scene) automation
     const withAutomation = scope.kind === 'scene'
@@ -380,14 +421,22 @@ export async function exportAudio(scope: RenderScope, opts: ExportOptions) {
   try {
     if (opts.stems) {
       for (let i = 0; i < project.tracks.length; i++) {
+        // buses carry no clips of their own and are rendered as their own stems below
+        if (project.tracks[i].kind === 'bus') continue
         const buf = await renderBuffer(project, scope, { kind: 'track', idx: i }, from, ticks, sceneId)
         download(enc(await resample(buf)), `${title} - ${project.tracks[i].name}.${ext}`)
         await new Promise(r => setTimeout(r, 250))
       }
-      // return buses as their own stems so a stem set fully reconstructs the mix
+      // return + user buses as their own stems so a stem set fully reconstructs the
+      // mix (sends are additive, so dry tracks + return stems + bus stems sum back)
       for (let r = 0; r < (project.returns?.length ?? 0); r++) {
         const buf = await renderBuffer(project, scope, { kind: 'return', idx: r }, from, ticks, sceneId)
         download(enc(await resample(buf)), `${title} - ${project.returns![r].name || `Return ${r + 1}`}.${ext}`)
+        await new Promise(r => setTimeout(r, 250))
+      }
+      for (const b of project.tracks.filter(t => t.kind === 'bus')) {
+        const buf = await renderBuffer(project, scope, { kind: 'busstem', busId: b.id ?? b.name }, from, ticks, sceneId)
+        download(enc(await resample(buf)), `${title} - ${b.name}.${ext}`)
         await new Promise(r => setTimeout(r, 250))
       }
       toast(`Exported stems ✓`)
