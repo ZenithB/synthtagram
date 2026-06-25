@@ -132,6 +132,19 @@ export function App() {
         if (idx < scenes.length) engine.launchScene(scenes.get(idx).get('id'))
         return
       }
+      // arrangement marquee selection (multiple clips) takes priority
+      if (!ui.detailOpen && ui.selArrIds.length) {
+        if (e.key === 'Delete' || e.key === 'Backspace') {
+          ui.selArrIds.forEach(id => deleteArrClip(id))
+          setUI({ selArrIds: [] })
+          return
+        }
+        if (mod && e.key.toLowerCase() === 'd') {
+          e.preventDefault()
+          ui.selArrIds.forEach(id => duplicateArrClip(id))
+          return
+        }
+      }
       if (!ui.detailOpen && ui.selClip) {
         if (e.key === 'Delete' || e.key === 'Backspace') {
           if (ui.selClip.kind === 'session') deleteClipAt(ui.selClip.trackId, ui.selClip.sceneId)

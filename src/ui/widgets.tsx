@@ -284,3 +284,23 @@ export function ColorRow({ colors, onPick }: { colors: string[]; onPick: (idx: n
     </div>
   )
 }
+
+// Inline text editor used by track/scene/clip headers. Commits on Enter/blur,
+// cancels on Escape; onDone(null) means "no change".
+export function InlineRename({ value, onDone }: { value: string; onDone: (v: string | null) => void }) {
+  const [v, setV] = useState(value)
+  return (
+    <input
+      className="inline-rename" autoFocus value={v}
+      onChange={e => setV(e.target.value)}
+      onBlur={() => onDone(v.trim() || null)}
+      onKeyDown={e => {
+        if (e.key === 'Enter') onDone(v.trim() || null)
+        if (e.key === 'Escape') onDone(null)
+        e.stopPropagation()
+      }}
+      onClick={e => e.stopPropagation()}
+      onPointerDown={e => e.stopPropagation()}
+    />
+  )
+}

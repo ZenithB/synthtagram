@@ -202,11 +202,11 @@ button { cursor: pointer; background: none; border: none; }
 
 /* ---------------- session view ---------------- */
 .session { flex: 1; overflow: auto; background: var(--bg0); }
-.session-scroll { display: flex; align-items: stretch; padding: 10px; gap: 7px; min-height: 100%; }
+.session-scroll { display: flex; align-items: stretch; padding: 10px; gap: 7px; min-height: 100%; --head-h: 150px; }
 .track-col { display: flex; flex-direction: column; width: 128px; flex-shrink: 0; }
 .track-head {
   background: var(--bg1); border: 1px solid var(--border); border-top: 3px solid; border-radius: 7px 7px 0 0;
-  padding: 7px 7px 5px; cursor: pointer;
+  padding: 7px 7px 5px; cursor: pointer; min-height: var(--head-h); box-sizing: border-box;
 }
 .track-head.selected { background: var(--bg2); box-shadow: inset 0 0 0 1px var(--accent); }
 .track-title { display: flex; align-items: center; gap: 4px; margin-bottom: 5px; min-height: 18px; }
@@ -269,7 +269,8 @@ button { cursor: pointer; background: none; border: none; }
 .feedback-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px; }
 
 .scene-col { width: 118px; margin-left: auto; }
-.scene-col-head { background: var(--bg1); border: 1px solid var(--border); border-radius: 7px 7px 0 0; padding: 8px; font-weight: 700; font-size: 11px; color: var(--dim); text-align: center; letter-spacing: 0.6px; text-transform: uppercase; }
+.master-head { cursor: default; display: flex; flex-direction: column; align-items: center; gap: 5px; border-top-color: var(--accent2); }
+.master-head .track-title { justify-content: center; margin-bottom: 0; min-height: 0; }
 .scene-cell { height: 34px; display: flex; align-items: center; gap: 5px; background: var(--bg1); border: 1px solid var(--border); border-radius: 5px; padding: 0 6px; }
 .scene-play { color: var(--ok); font-size: 12px; }
 .scene-play:hover { transform: scale(1.25); }
@@ -329,6 +330,7 @@ button { cursor: pointer; background: none; border: none; }
 .arr-clip.ghost-drag { opacity: 0.75; z-index: 4; }
 .arr-clip-name { font-size: 11px; font-weight: 600; white-space: nowrap; }
 .arr-clip-resize { position: absolute; right: 0; top: 0; bottom: 0; width: 8px; cursor: ew-resize; }
+.arr-marquee { position: absolute; border: 1px solid var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); border-radius: 2px; z-index: 6; pointer-events: none; }
 .playhead { position: absolute; top: 0; bottom: 0; left: 0; width: 2px; background: var(--playhead); z-index: 4; pointer-events: none; }
 .playhead.ghost { opacity: 0.55; width: 2px; }
 .arr-zoom { position: absolute; right: 14px; bottom: 14px; display: flex; gap: 4px; background: var(--bg1); border: 1px solid var(--border); border-radius: 6px; padding: 2px; z-index: 6; }

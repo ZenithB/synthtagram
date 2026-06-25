@@ -6,20 +6,20 @@ import * as Y from 'yjs'
 import { CLIP_COLORS } from '../types'
 import {
   tracks, scenes, clips, clipKey, createClip, deleteClipAt, duplicateClipTo,
-  removeTrack, renameTrack, setTrackColor, duplicateTrack, moveTrack, setTrackMix,
+  renameTrack, setTrackMix,
   addScene, removeScene, renameScene, duplicateScene, sendClipToArr, sendSceneToArr,
   setMetaField, meta, setClipField, trackById, moveArrClip, busList,
 } from '../state/doc'
 import { engine } from '../audio/engine'
 import { setUI, ui, useUI, toast } from '../state/store'
 import { useY, useRaf } from './hooks'
-import { Fader, MeterBar, Knob, openMenu, ColorRow, MenuItem } from './widgets'
+import { Fader, MeterBar, Knob, openMenu, ColorRow, MenuItem, InlineRename } from './widgets'
 import { peersList, subscribeAwareness, awarenessVersion, setPresence } from '../state/net'
 import { Icon } from './icons'
 import {
   selectClip, selectTrack, copyClipRef, pasteClipTo, hasClipboard,
   addSynthTrack, addDrumTrack, addAudio, addBus, attemptSetOutput,
-  duplicateClipToNextScene, loadLoop, loadProgression,
+  duplicateClipToNextScene, loadLoop, loadProgression, trackHeaderMenu,
 } from './actions'
 import { MIDI_LOOPS, INST_PRESETS, DRUM_KITS, PROGRESSIONS } from '../packs'
 import { applyPreset, applyDrumKit } from './actions'
@@ -110,23 +110,6 @@ function ClipProgress({ trackId }: { trackId: string }) {
     if (ref.current) ref.current.style.width = p === null ? '0%' : `${p * 100}%`
   })
   return <div className="clip-progress"><div ref={ref} /></div>
-}
-
-function InlineRename({ value, onDone }: { value: string; onDone: (v: string | null) => void }) {
-  const [v, setV] = useState(value)
-  return (
-    <input
-      className="inline-rename" autoFocus value={v}
-      onChange={e => setV(e.target.value)}
-      onBlur={() => onDone(v.trim() || null)}
-      onKeyDown={e => {
-        if (e.key === 'Enter') onDone(v.trim() || null)
-        if (e.key === 'Escape') onDone(null)
-        e.stopPropagation()
-      }}
-      onPointerDown={e => e.stopPropagation()}
-    />
-  )
 }
 
 function ClipSlot({ track, sceneId }: { track: Y.Map<any>; sceneId: string }) {
@@ -246,15 +229,7 @@ function TrackHeader({ track }: { track: Y.Map<any> }) {
   const color = CLIP_COLORS[track.get('color') ?? 0]
   const kind = track.get('kind')
 
-  const menu: MenuItem[] = [
-    { label: 'Rename', fn: () => setRenaming(true) },
-    { custom: <ColorRow colors={CLIP_COLORS} onPick={i => setTrackColor(trackId, i)} /> },
-    { label: 'Duplicate track', fn: () => duplicateTrack(trackId) },
-    { label: '← Move left', fn: () => moveTrack(trackId, -1) },
-    { label: '→ Move right', fn: () => moveTrack(trackId, 1) },
-    'sep',
-    { label: 'Delete track', fn: () => { if (confirm(`Delete "${track.get('name')}"?`)) removeTrack(trackId) }, danger: true },
-  ]
+  const menu = trackHeaderMenu(trackId, () => setRenaming(true))
 
   return (
     <div
@@ -376,22 +351,24 @@ export function SessionView() {
         </div>
 
         <div className="track-col scene-col">
-          <div className="scene-col-head">
-            <span>Scenes</span>
+          {/* Master sits at the top styled like a track header, so the scene
+              launch buttons below line up row-for-row with the clip slots. */}
+          <div className="track-head master-head" data-info="Master output, analyzer & volume">
+            <div className="track-title">
+              <span className="track-icon"><Icon name="spectrum" size={12} /></span>
+              <span className="track-name">Master</span>
+            </div>
+            <Analyzer />
+            <div className="master-mix">
+              <Fader value={meta.get('masterGain') ?? 0} onChange={v => setMetaField('Master volume', 'masterGain', v)} height={58} />
+              <MeterBar getDb={() => engine.masterDb()} height={58} />
+              <button className="stop-all" onClick={() => engine.stopAllClips()} data-info="Stop all clips (transport keeps rolling)"><Icon name="stopOutline" size={11} /> All</button>
+            </div>
           </div>
           <div className="slots">
             {scenes.toArray().map((s, i) => <SceneCell key={s.get('id')} scene={s} index={i} />)}
           </div>
           <button className="add-scene" onClick={() => addScene()} data-info="Add a scene (row of clips)">＋ Scene</button>
-          <div className="master-strip" data-info="Master volume & output meter">
-            <span className="master-label">Master</span>
-            <Analyzer />
-            <div className="master-mix">
-              <Fader value={meta.get('masterGain') ?? 0} onChange={v => setMetaField('Master volume', 'masterGain', v)} height={80} />
-              <MeterBar getDb={() => engine.masterDb()} height={80} />
-            </div>
-            <button className="stop-all" onClick={() => engine.stopAllClips()} data-info="Stop all clips (transport keeps rolling)"><Icon name="stopOutline" size={11} /> All</button>
-          </div>
         </div>
       </div>
     </div>

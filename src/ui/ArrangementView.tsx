@@ -8,15 +8,15 @@ import { BAR, CLIP_COLORS, clamp, ticksToBBS } from '../types'
 import {
   tracks, arr, meta, addArrClip, moveArrClip, resizeArrClip, deleteArrClip,
   duplicateArrClip, setClipField, setLoopRegion, arrEndTicks, setTrackMix, clipToJSON,
-  clips, clipKey, setAutoOpen, setAutoParam,
+  clips, clipKey, setAutoOpen, setAutoParam, renameTrack,
 } from '../state/doc'
 import { autoTargets } from '../audio/params'
 import { AutomationLane } from './AutomationLane'
 import { engine } from '../audio/engine'
 import { setUI, ui, useUI, toast } from '../state/store'
 import { useY, useRaf } from './hooks'
-import { openMenu, ColorRow, MenuItem, capturePointer, Knob, HFader } from './widgets'
-import { selectClip } from './actions'
+import { openMenu, ColorRow, MenuItem, capturePointer, Knob, HFader, InlineRename } from './widgets'
+import { selectClip, trackHeaderMenu } from './actions'
 import { Icon } from './icons'
 import { peersList, subscribeAwareness, awarenessVersion } from '../state/net'
 import { MIDI_LOOPS, PROGRESSIONS, progressionClip, clipInKey } from '../packs'
@@ -54,10 +54,12 @@ function GhostPlayheads({ pxPerTick }: { pxPerTick: number }) {
   )
 }
 
+type MoveItem = { id: string; origStart: number; origLane: number }
 type DragState =
-  | { type: 'move'; id: string; startX: number; startY: number; origStart: number; origLane: number; dx: number; dLane: number; copy: boolean }
+  | { type: 'move'; id: string; startX: number; startY: number; origStart: number; origLane: number; dx: number; dLane: number; copy: boolean; items: MoveItem[] }
   | { type: 'resize'; id: string; startX: number; origLen: number; dLen: number }
   | { type: 'loop'; edge: 'start' | 'end' | 'mid'; startX: number; origStart: number; origEnd: number; cur: [number, number] }
+  | { type: 'marquee'; x0: number; y0: number; x1: number; y1: number; moved: boolean }
   | null
 
 export function ArrangementView() {
@@ -71,6 +73,8 @@ export function ArrangementView() {
   // layout px — divide by this to map clicks/drags to ticks.
   const z = uiZoom || 1
   const [drag, setDrag] = useState<DragState>(null)
+  const selArrIds = useUI(s => s.selArrIds)        // marquee multi-selection
+  const [renamingTid, setRenamingTid] = useState<string | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const headsRef = useRef<HTMLDivElement>(null)
   const lanesRef = useRef<HTMLDivElement>(null)
@@ -130,13 +134,34 @@ export function ArrangementView() {
   }
 
   // ----- clip drag handlers -----
+  const itemOf = (cid: string): MoveItem | null => {
+    const m = arr.get(cid) as Y.Map<any> | undefined
+    return m ? { id: cid, origStart: m.get('start') ?? 0, origLane: laneOf(m.get('trackId')) } : null
+  }
   const beginMove = (e: React.PointerEvent, id: string) => {
     e.stopPropagation()
     const m = arr.get(id) as Y.Map<any>
     if (!m) return
-    selectClip({ kind: 'arr', id })
-    const lane = laneOf(m.get('trackId'))
-    setDrag({ type: 'move', id, startX: e.clientX, startY: e.clientY, origStart: m.get('start'), origLane: lane, dx: 0, dLane: 0, copy: e.altKey })
+    // Dragging a clip that's part of the marquee selection moves the whole group;
+    // otherwise it becomes the single selection.
+    const inGroup = selArrIds.includes(id) && selArrIds.length > 1
+    const items = (inGroup ? selArrIds : [id]).map(itemOf).filter(Boolean) as MoveItem[]
+    if (!inGroup) { selectClip({ kind: 'arr', id }); setUI({ selArrIds: [] }) }
+    setDrag({ type: 'move', id, startX: e.clientX, startY: e.clientY, origStart: m.get('start') ?? 0, origLane: laneOf(m.get('trackId')), dx: 0, dLane: 0, copy: e.altKey, items })
+    capturePointer(e)
+  }
+  // Marquee select: pointer-down on empty lane background drags a box; clips whose
+  // rect intersects it become the selection. A click with no drag seeks + clears.
+  const beginMarquee = (e: React.PointerEvent) => {
+    // clips & automation lanes stopPropagation, so this only fires on the lane
+    // background (the .arr-lanes element or its .lane-bg / .lane-grid overlays).
+    if (e.button !== 0) return
+    const el = e.target as HTMLElement
+    if (el.closest('.arr-clip') || el.closest('.arr-auto-lane')) return
+    const rect = lanesRef.current!.getBoundingClientRect()
+    const x = (e.clientX - rect.left) / z
+    const y = (e.clientY - rect.top) / z
+    setDrag({ type: 'marquee', x0: x, y0: y, x1: x, y1: y, moved: false })
     capturePointer(e)
   }
   const beginResize = (e: React.PointerEvent, id: string) => {
@@ -152,6 +177,9 @@ export function ArrangementView() {
       const lr = lanesRef.current?.getBoundingClientRect()
       const targetIdx = lr ? trackIdxAtY((e.clientY - lr.top) / z) : drag.origLane
       setDrag({ ...drag, dx: (e.clientX - drag.startX) / z / pxPerTick, dLane: targetIdx - drag.origLane, copy: e.altKey || drag.copy })
+    } else if (drag.type === 'marquee') {
+      const rect = lanesRef.current!.getBoundingClientRect()
+      setDrag({ ...drag, x1: (e.clientX - rect.left) / z, y1: (e.clientY - rect.top) / z, moved: true })
     } else if (drag.type === 'resize') {
       setDrag({ ...drag, dLen: (e.clientX - drag.startX) / z / pxPerTick })
     } else if (drag.type === 'loop') {
@@ -167,16 +195,40 @@ export function ArrangementView() {
   const onPointerUp = (e: React.PointerEvent) => {
     if (!drag) return
     if (drag.type === 'move') {
-      const m = arr.get(drag.id) as Y.Map<any>
-      if (m) {
-        const newStart = Math.max(0, snap(drag.origStart + drag.dx, e.shiftKey))
-        const newLane = clamp(drag.origLane + drag.dLane, 0, trackArr.length - 1)
+      // snap the delta off the dragged clip, then apply it to the whole group
+      const dStart = Math.max(0, snap(drag.origStart + drag.dx, e.shiftKey)) - drag.origStart
+      const copies: string[] = []
+      for (const it of drag.items) {
+        const m = arr.get(it.id) as Y.Map<any> | undefined
+        if (!m) continue
+        const newStart = Math.max(0, it.origStart + dStart)
+        const newLane = clamp(it.origLane + drag.dLane, 0, trackArr.length - 1)
         const newTrack = trackArr[newLane]?.get('id') ?? m.get('trackId')
         if (drag.copy) {
-          addArrClip(newTrack, newStart, clipToJSON(m), 'Duplicate clip')
+          const nid = addArrClip(newTrack, newStart, clipToJSON(m), drag.items.length > 1 ? 'Duplicate clips' : 'Duplicate clip')
+          if (nid) copies.push(nid)
         } else {
-          moveArrClip(drag.id, { start: newStart, trackId: newTrack })
+          moveArrClip(it.id, { start: newStart, trackId: newTrack })
         }
+      }
+      if (drag.copy && drag.items.length > 1 && copies.length) setUI({ selArrIds: copies, selClip: null })
+    } else if (drag.type === 'marquee') {
+      if (!drag.moved) {
+        engine.seekArr(snap(Math.max(0, Math.min(drag.x0, drag.x1) / pxPerTick), e.shiftKey))
+        setUI({ selArrIds: [], selClip: null })
+      } else {
+        const x0 = Math.min(drag.x0, drag.x1), x1 = Math.max(drag.x0, drag.x1)
+        const y0 = Math.min(drag.y0, drag.y1), y1 = Math.max(drag.y0, drag.y1)
+        const hits: string[] = []
+        arr.forEach((m: Y.Map<any>, id: string) => {
+          const lane = laneOf(m.get('trackId'))
+          if (lane < 0) return
+          const cx0 = (m.get('start') ?? 0) * pxPerTick
+          const cx1 = cx0 + (m.get('len') ?? BAR) * pxPerTick
+          const cy0 = trackTopByIdx(lane)
+          if (cx1 > x0 && cx0 < x1 && cy0 + LANE_H > y0 && cy0 < y1) hits.push(id)
+        })
+        setUI({ selArrIds: hits, selClip: null })
       }
     } else if (drag.type === 'resize') {
       const newLen = Math.max(BAR / 4, snap(drag.origLen + drag.dLen, e.shiftKey))
@@ -196,17 +248,21 @@ export function ArrangementView() {
     let len = m.get('len') ?? BAR
     let laneIdx = lane
     let ghost = false
-    if (drag?.type === 'move' && drag.id === id && !drag.copy) {
-      start = Math.max(0, snap(drag.origStart + drag.dx, false))
-      laneIdx = clamp(drag.origLane + drag.dLane, 0, trackArr.length - 1)
-      ghost = true
+    if (drag?.type === 'move' && !drag.copy) {
+      const it = drag.items.find(i => i.id === id)
+      if (it) {
+        const dStart = Math.max(0, snap(drag.origStart + drag.dx, false)) - drag.origStart
+        start = Math.max(0, it.origStart + dStart)
+        laneIdx = clamp(it.origLane + drag.dLane, 0, trackArr.length - 1)
+        ghost = true
+      }
     }
     if (drag?.type === 'resize' && drag.id === id) {
       len = Math.max(BAR / 4, snap(drag.origLen + drag.dLen, false))
       ghost = true
     }
     const color = CLIP_COLORS[m.get('color') ?? 0]
-    const isSel = ui.selClip?.kind === 'arr' && ui.selClip.id === id
+    const isSel = (ui.selClip?.kind === 'arr' && ui.selClip.id === id) || selArrIds.includes(id)
     const menu: MenuItem[] = [
       { label: <><Icon name="pencil" size={12} /> Edit notes</>, fn: () => selectClip({ kind: 'arr', id }, true) },
       { label: 'Duplicate after', fn: () => duplicateArrClip(id) },
@@ -214,6 +270,9 @@ export function ArrangementView() {
       'sep',
       { label: 'Delete', fn: () => deleteArrClip(id), danger: true },
     ]
+    if (selArrIds.length > 1 && selArrIds.includes(id)) {
+      menu.push({ label: `Delete ${selArrIds.length} selected`, fn: () => { selArrIds.forEach(gid => deleteArrClip(gid)); setUI({ selArrIds: [] }) }, danger: true })
+    }
     clipEls.push(
       <div
         key={id}
@@ -257,9 +316,13 @@ export function ArrangementView() {
             return (
               <React.Fragment key={tid}>
                 <div className="arr-head" style={{ height: LANE_H, borderLeftColor: CLIP_COLORS[t.get('color') ?? 0] }}
-                  onClick={() => { setUI({ selTrackId: tid, detailOpen: true, detailTab: 'devices' }) }}>
+                  onClick={() => { setUI({ selTrackId: tid, detailOpen: true, detailTab: 'devices' }) }}
+                  onContextMenu={e => openMenu(e, trackHeaderMenu(tid, () => setRenamingTid(tid), true))}
+                  data-info="Click to select & open devices. Right-click for track options.">
                   <div className="arr-head-top">
-                    <span className="arr-head-name">{t.get('name')}</span>
+                    {renamingTid === tid
+                      ? <InlineRename value={t.get('name')} onDone={v => { setRenamingTid(null); if (v) renameTrack(tid, v) }} />
+                      : <span className="arr-head-name" onDoubleClick={e => { e.stopPropagation(); setRenamingTid(tid) }}>{t.get('name')}</span>}
                     <button className={`tbtn mute ${t.get('mute') ? 'on' : ''}`} onClick={e => { e.stopPropagation(); setTrackMix(tid, { mute: !t.get('mute') }) }}>M</button>
                   </div>
                   <div className="arr-head-mix" onClick={e => e.stopPropagation()} onDoubleClick={e => e.stopPropagation()}>
@@ -319,6 +382,7 @@ export function ArrangementView() {
             className="arr-lanes"
             ref={lanesRef}
             style={{ height: lanesHeight }}
+            onPointerDown={beginMarquee}
             onDoubleClick={e => {
               const rect = e.currentTarget.getBoundingClientRect()
               const y = (e.clientY - rect.top) / z
@@ -330,7 +394,6 @@ export function ArrangementView() {
               const id = addArrClip(tid, Math.max(0, t), { name: 'Clip', color: trackArr[idx].get('color') ?? 0, len: BAR * 4, notes: {} })
               selectClip({ kind: 'arr', id }, true)
             }}
-            onClick={e => { if ((e.target as HTMLElement).classList.contains('arr-lanes')) seekFromEvent(e, e.currentTarget) }}
             onDragOver={e => e.preventDefault()}
             onDrop={e => {
               const loopName = e.dataTransfer.getData('stg/loop')
@@ -377,6 +440,12 @@ export function ArrangementView() {
                 </div>
               )
             })}
+            {drag?.type === 'marquee' && drag.moved && (
+              <div className="arr-marquee" style={{
+                left: Math.min(drag.x0, drag.x1), top: Math.min(drag.y0, drag.y1),
+                width: Math.abs(drag.x1 - drag.x0), height: Math.abs(drag.y1 - drag.y0),
+              }} />
+            )}
             <Playhead pxPerTick={pxPerTick} />
             <GhostPlayheads pxPerTick={pxPerTick} />
           </div>

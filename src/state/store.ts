@@ -10,6 +10,7 @@ export type UIState = {
   selTrackId: string | null
   armTrackId: string | null
   selClip: ClipRef | null
+  selArrIds: string[]            // arrangement marquee multi-selection (clip ids)
   detailOpen: boolean
   detailTab: 'clip' | 'devices'
   detailHeight: number
@@ -57,6 +58,7 @@ export const ui: UIState = {
   selTrackId: null,
   armTrackId: null,
   selClip: null,
+  selArrIds: [],
   detailOpen: false,
   detailTab: 'clip',
   detailHeight: savedHeight,

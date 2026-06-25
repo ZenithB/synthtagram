@@ -6,13 +6,31 @@ import {
   addTrack, addScene, clipKey, clips, duplicateClipTo, getClipMap, clipToJSON,
   jsonToClipMap, loadProject, mutate, scenes, setInstrument, trackById, ClipJSON, TrackJSON,
   addAudioTrack, createAudioClip, addBusTrack, tracks, busCanReach, setTrackOutput, setBusSend,
+  setTrackColor, duplicateTrack, moveTrack, removeTrack,
 } from '../state/doc'
+import { ColorRow, MenuItem } from './widgets'
 import { setUI, toast, ui } from '../state/store'
 import { setPresence } from '../state/net'
 import { engine } from '../audio/engine'
 import { meta } from '../state/doc'
 import { importSampleFile, getSampleBuffer } from '../audio/samples'
 import { DEFAULT_PROJECT, demoProject, DRUM_KITS, InstPreset, MidiLoop, Progression, progressionClip, clipInKey } from '../packs'
+
+// Shared track-header right-click menu, so Session and Arrangement headers offer
+// the same options. `onRename` lets each view drive its own inline editor;
+// `vertical` flips the reorder labels (Session = columns, Arrangement = rows).
+export function trackHeaderMenu(trackId: string, onRename: () => void, vertical = false): MenuItem[] {
+  const t = trackById(trackId)
+  return [
+    { label: 'Rename', fn: onRename },
+    { custom: <ColorRow colors={CLIP_COLORS} onPick={i => setTrackColor(trackId, i)} /> },
+    { label: 'Duplicate track', fn: () => duplicateTrack(trackId) },
+    { label: vertical ? '↑ Move up' : '← Move left', fn: () => moveTrack(trackId, -1) },
+    { label: vertical ? '↓ Move down' : '→ Move right', fn: () => moveTrack(trackId, 1) },
+    'sep',
+    { label: 'Delete track', fn: () => { if (confirm(`Delete "${t?.get('name')}"?`)) removeTrack(trackId) }, danger: true },
+  ]
+}
 
 export function selectTrack(trackId: string | null) {
   setUI({ selTrackId: trackId })
