@@ -5,7 +5,7 @@
 import { Note, BAR, STEP16 } from './types'
 import { NOTE_NAMES } from './theory'
 import { defaultsFor, instSchema } from './audio/schema'
-import { ClipJSON, ProjectJSON } from './state/doc'
+import { ClipJSON, ProjectJSON, DEFAULT_BUSES } from './state/doc'
 
 // ---------- note builders ----------
 let nid = 0
@@ -549,6 +549,7 @@ export const DEFAULT_PROJECT: ProjectJSON = {
     { id: 'tBass', name: 'Bass', color: 6, kind: 'synth', inst: { type: 'mono', params: INST_PRESETS.find(p => p.name === 'Sub Bass')!.params }, fx: [], gain: -2, pan: 0, mute: false, solo: false },
     { id: 'tChords', name: 'Chords', color: 8, kind: 'synth', inst: { type: 'poly', params: INST_PRESETS.find(p => p.name === 'Soft Piano')!.params }, fx: [{ type: 'reverb', on: true, params: { size: 2.8, mix: 0.3 } }], gain: -4, pan: 0, mute: false, solo: false },
     { id: 'tLead', name: 'Lead', color: 3, kind: 'synth', inst: { type: 'poly', params: INST_PRESETS.find(p => p.name === 'Neon Saw Lead')!.params }, fx: [{ type: 'delay', on: true, params: { time: 2, fb: 0.35, mix: 0.25 } }], gain: -5, pan: 0, mute: false, solo: false },
+    ...DEFAULT_BUSES,
   ],
   scenes: [
     { id: 's1', name: 'Scene 1' }, { id: 's2', name: 'Scene 2' }, { id: 's3', name: 'Scene 3' },
@@ -641,6 +642,7 @@ export function demoProject(): ProjectJSON {
       { id: 'tBass', name: 'Bass', color: 6, kind: 'synth', inst: { type: 'mono', params: INST_PRESETS.find(p => p.name === 'Sub Bass')!.params }, fx: [{ type: 'dist', on: true, params: { amt: 0.15, mix: 0.5 } }], gain: -2, pan: 0, mute: false, solo: false },
       { id: 'tChords', name: 'Chords', color: 8, kind: 'synth', inst: { type: 'poly', params: INST_PRESETS.find(p => p.name === 'Soft Piano')!.params }, fx: [{ type: 'chorus', on: true, params: { rate: 0.8, depth: 0.5, mix: 0.2 } }, { type: 'reverb', on: true, params: { size: 3.2, mix: 0.32 } }], gain: -5, pan: -0.1, mute: false, solo: false },
       { id: 'tLead', name: 'Lead', color: 3, kind: 'synth', inst: { type: 'pluck', params: INST_PRESETS.find(p => p.name === 'Classic Pluck')!.params }, fx: [{ type: 'delay', on: true, params: { time: 3, fb: 0.45, mix: 0.35 } }, { type: 'reverb', on: true, params: { size: 2.2, mix: 0.25 } }], gain: -3, pan: 0.12, mute: false, solo: false },
+      ...DEFAULT_BUSES,
     ],
     scenes: [
       { id: 's1', name: 'Intro' }, { id: 's2', name: 'Beat In' }, { id: 's3', name: 'Groove' },

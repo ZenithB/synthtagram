@@ -16,7 +16,7 @@ import { engine } from '../audio/engine'
 import { setUI, ui, useUI, toast } from '../state/store'
 import { useY, useRaf } from './hooks'
 import { openMenu, ColorRow, MenuItem, capturePointer, Knob, HFader, InlineRename } from './widgets'
-import { selectClip, trackHeaderMenu } from './actions'
+import { selectClip, trackHeaderMenu, assignKitToTrack, addSampleToArr } from './actions'
 import { Icon } from './icons'
 import { peersList, subscribeAwareness, awarenessVersion } from '../state/net'
 import { MIDI_LOOPS, PROGRESSIONS, progressionClip, clipInKey } from '../packs'
@@ -318,12 +318,15 @@ export function ArrangementView() {
                 <div className="arr-head" style={{ height: LANE_H, borderLeftColor: CLIP_COLORS[t.get('color') ?? 0] }}
                   onClick={() => { setUI({ selTrackId: tid, detailOpen: true, detailTab: 'devices' }) }}
                   onContextMenu={e => openMenu(e, trackHeaderMenu(tid, () => setRenamingTid(tid), true))}
-                  data-info="Click to select & open devices. Right-click for track options.">
+                  onDragOver={e => e.preventDefault()}
+                  onDrop={e => { const dk = e.dataTransfer.getData('stg/drumkit'); if (dk) assignKitToTrack(tid, dk) }}
+                  data-info="Click to select & open devices. Right-click for track options. Drop a drum kit here.">
                   <div className="arr-head-top">
                     {renamingTid === tid
                       ? <InlineRename value={t.get('name')} onDone={v => { setRenamingTid(null); if (v) renameTrack(tid, v) }} />
                       : <span className="arr-head-name" onDoubleClick={e => { e.stopPropagation(); setRenamingTid(tid) }}>{t.get('name')}</span>}
-                    <button className={`tbtn mute ${t.get('mute') ? 'on' : ''}`} onClick={e => { e.stopPropagation(); setTrackMix(tid, { mute: !t.get('mute') }) }}>M</button>
+                    <button className={`tbtn mute ${t.get('mute') ? 'on' : ''}`} data-info="Mute track" onClick={e => { e.stopPropagation(); setTrackMix(tid, { mute: !t.get('mute') }) }}>M</button>
+                    <button className={`tbtn solo ${t.get('solo') ? 'on' : ''}`} data-info="Solo track" onClick={e => { e.stopPropagation(); setTrackMix(tid, { solo: !t.get('solo') }) }}>S</button>
                   </div>
                   <div className="arr-head-mix" onClick={e => e.stopPropagation()} onDoubleClick={e => e.stopPropagation()}>
                     <HFader value={t.get('gain') ?? 0} onChange={v => setTrackMix(tid, { gain: v })} />
@@ -399,10 +402,14 @@ export function ArrangementView() {
               const loopName = e.dataTransfer.getData('stg/loop')
               const progName = e.dataTransfer.getData('stg/prog')
               const clipSrc = e.dataTransfer.getData('stg/clip')
+              const sample = e.dataTransfer.getData('stg/sample')
               const rect = e.currentTarget.getBoundingClientRect()
               const t = Math.max(0, snap((e.clientX - rect.left) / z / pxPerTick, false))
               const tid = trackArr[trackIdxAtY((e.clientY - rect.top) / z)]?.get('id')
-              if (loopName) {
+              if (sample && tid) {
+                const [sid, nm] = sample.split('::')
+                addSampleToArr(tid, t, sid, nm || 'Sample')
+              } else if (loopName) {
                 const loop = MIDI_LOOPS.find(l => l.name === loopName)
                 if (loop && tid) {
                   const built = loop.forDrums ? loop.clip : clipInKey(loop.clip, meta.get('root') ?? 9)

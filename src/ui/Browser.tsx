@@ -4,8 +4,10 @@
 
 import React, { useState } from 'react'
 import { INST_PRESETS, DRUM_KITS, MIDI_LOOPS, PROGRESSIONS, progressionPitches } from '../packs'
+import { DRUM_PACKS, DrumPack, RoleName, packSampleId, ROLE_LABEL } from '../audio/drumpacks'
 import { engine } from '../audio/engine'
-import { applyPreset, applyDrumKit, loadLoop, loadProgression, loadDemo, newProject, importProjectFile, pickAudioFile } from './actions'
+import { ui } from '../state/store'
+import { applyPreset, applyDrumKit, loadLoop, loadProgression, loadDemo, newProject, importProjectFile, pickAudioFile, assignKitToTrack } from './actions'
 import { exportProjectFile } from '../audio/render'
 import { meta } from '../state/doc'
 import { useY } from './hooks'
@@ -38,6 +40,38 @@ function Section({ title, children, defaultOpen = true }: { title: string; child
 }
 
 const LOOP_ICONS: Record<string, string> = { Drums: 'drum', Bass: 'bass', Chords: 'chord', Melody: 'note', Arps: 'arpUp' }
+
+// A genre drum pack: drag the header to load the whole kit onto a drum track;
+// expand to drag individual samples onto the timeline or a drum pad.
+function DrumPackRow({ pack }: { pack: DrumPack }) {
+  const [open, setOpen] = useState(false)
+  const roles = Object.keys(pack.roles) as RoleName[]
+  return (
+    <div className="bpack">
+      <div className="bpack-head" draggable
+        onDragStart={e => e.dataTransfer.setData('stg/drumkit', pack.id)}
+        onClick={() => setOpen(o => !o)}
+        onDoubleClick={() => ui.selTrackId && assignKitToTrack(ui.selTrackId, pack.id)}
+        data-info="Drag onto a drum track to load the whole kit (kick→kick, snare→snare…). Click to expand, double-click loads to the selected drum track.">
+        <span className={`tri ${open ? 'open' : ''}`}>▸</span>
+        <span className="bitem-icon"><Icon name="drum" size={12} /></span>{pack.name}
+        <span className="bitem-sub">{pack.tag}</span>
+      </div>
+      {open && (
+        <div className="bpack-body">
+          {roles.map(role => (
+            <div key={role} className="bitem bsample" draggable
+              onDragStart={e => e.dataTransfer.setData('stg/sample', `${packSampleId(pack.id, role)}::${pack.name} ${ROLE_LABEL[role]}`)}
+              onClick={() => engine.auditionSample(packSampleId(pack.id, role))}
+              data-info="Click to audition · drag onto the arrangement timeline (audio clip) or onto a drum device pad">
+              <span className="bitem-icon"><Icon name="sampler" size={11} /></span>{ROLE_LABEL[role]}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
 
 export function Browser() {
   const [q, setQ] = useState('')
@@ -183,6 +217,8 @@ export function Browser() {
         <Section title="Audio">
           <button className="bbtn" onClick={pickAudioFile} data-info="Import an audio file (mono or stereo) as an audio clip on a new track"><Icon name="sampler" size={13} />Import audio clip…</button>
           <div className="bcat" style={{ paddingBottom: 6 }}>Or drag an audio file onto the app</div>
+          <div className="bcat">Drum Packs</div>
+          {DRUM_PACKS.filter(p => match(`${p.name} ${p.tag} drum samples kit`)).map(p => <DrumPackRow key={p.id} pack={p} />)}
         </Section>
 
         <Section title="Project">

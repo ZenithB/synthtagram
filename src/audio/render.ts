@@ -128,7 +128,7 @@ function envValueAt(pts: { t: number; v: number }[], pos: number, loop: number):
 }
 
 /** Build one track's full signal chain into the current (offline) context. */
-function buildOffTrack(t: TrackJSON, master: Tone.Volume, returnInputs: Tone.ToneAudioNode[], toMaster: boolean): OffTrack {
+function buildOffTrack(t: TrackJSON, master: Tone.Volume, returnInputs: Tone.ToneAudioNode[], toMaster: boolean, legacyAB = true): OffTrack {
   const buf = t.inst.type === 'sampler' ? getSampleBuffer(t.inst.sampleId || '') : undefined
   let padBuffers: Map<number, AudioBuffer> | undefined
   if (t.inst.type === 'drum' && t.inst.padSamples) {
@@ -159,10 +159,13 @@ function buildOffTrack(t: TrackJSON, master: Tone.Volume, returnInputs: Tone.Ton
   // Buses route their fader to `output` (master/another bus) in wireBuses, after
   // every track exists; normal tracks feed master directly.
   if (toMaster && t.kind !== 'bus') vol.connect(master)
+  // always feed the send gains so the bus-routing block can pick them up; only
+  // wire them to the LEGACY return channels when there are no A/B buses (mirrors
+  // the live engine's exclusive `sendBusInput() ?? builtReturns` semantics).
   const sendA = new Tone.Gain(t.sendA ?? 0)
   const sendB = new Tone.Gain(t.sendB ?? 0)
-  if (returnInputs.length) {
-    vol.connect(sendA); vol.connect(sendB)
+  vol.connect(sendA); vol.connect(sendB)
+  if (legacyAB && returnInputs.length) {
     if (returnInputs[0]) sendA.connect(returnInputs[0])
     if (returnInputs[1]) sendB.connect(returnInputs[1])
   }
@@ -273,6 +276,8 @@ async function renderBuffer(
       })
     }
     const returnInputs = returns.map(r => r.input)
+    // legacy A/B return wiring only applies when the project has no A/B send buses
+    const legacyAB = !project.tracks.some(t => t.kind === 'bus' && (t.send === 'A' || t.send === 'B'))
 
     const offTracks: OffTrack[] = []
     project.tracks.forEach((t, idx) => {
@@ -282,7 +287,7 @@ async function renderBuffer(
       // tracks feed master only on the mix and their own dry stem; on a return/bus
       // stem we want just the wet send, so they reach master only via the bus chain
       const toMaster = target.kind === 'mix' || target.kind === 'track'
-      const ot = buildOffTrack(t, master, returnInputs, toMaster)
+      const ot = buildOffTrack(t, master, returnInputs, toMaster, legacyAB)
       offTracks.push(ot)
 
       const isDrum = t.kind === 'drum'
@@ -364,6 +369,14 @@ async function renderBuffer(
           Tone.connect(ot.vol, g)
           Tone.connect(g, inp)
         }
+      })
+      // 3) built-in A/B sends → the A/B buses (tagged json.send); gain already set
+      const sendBus = (which: 'A' | 'B') => buses.find(o => o.json.send === which)?.inst.out ?? null
+      const aIn = sendBus('A'), bIn = sendBus('B')
+      offTracks.forEach(ot => {
+        if (ot.json.kind === 'bus') return
+        if (aIn) Tone.connect(ot.sendA, aIn)
+        if (bIn) Tone.connect(ot.sendB, bIn)
       })
     }
 

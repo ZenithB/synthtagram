@@ -19,7 +19,7 @@ import { Icon } from './icons'
 import {
   selectClip, selectTrack, copyClipRef, pasteClipTo, hasClipboard,
   addSynthTrack, addDrumTrack, addAudio, addBus, attemptSetOutput,
-  duplicateClipToNextScene, loadLoop, loadProgression, trackHeaderMenu,
+  duplicateClipToNextScene, loadLoop, loadProgression, trackHeaderMenu, assignKitToTrack,
 } from './actions'
 import { MIDI_LOOPS, INST_PRESETS, DRUM_KITS, PROGRESSIONS } from '../packs'
 import { applyPreset, applyDrumKit } from './actions'
@@ -241,8 +241,10 @@ function TrackHeader({ track }: { track: Y.Map<any> }) {
       onDrop={e => {
         const presetName = e.dataTransfer.getData('stg/preset')
         const kitName = e.dataTransfer.getData('stg/kit')
+        const drumPack = e.dataTransfer.getData('stg/drumkit')
         if (presetName) { selectTrack(trackId); const p = INST_PRESETS.find(x => x.name === presetName); if (p) applyPreset(p) }
         if (kitName) { selectTrack(trackId); applyDrumKit(kitName) }
+        if (drumPack) assignKitToTrack(trackId, drumPack)
       }}
       data-info="Click to select & open devices. Right-click for track options."
     >
@@ -319,27 +321,33 @@ export function SessionView() {
   useY(meta)
   useEngineTick()
 
+  const all = tracks.toArray()
+  const instr = all.filter(t => t.get('kind') !== 'bus')
+  const buses = all.filter(t => t.get('kind') === 'bus')   // bus tracks group on the right, beside master
+  // `push` makes a column the leader of the right-aligned group (margin-left:auto)
+  const trackCol = (t: Y.Map<any>, push = false) => {
+    const isBus = t.get('kind') === 'bus'
+    return (
+      <div className={`track-col ${isBus ? 'bus-col' : ''} ${push ? 'push' : ''}`} key={t.get('id')}>
+        <TrackHeader track={t} />
+        {isBus
+          ? <div className="slots bus-slots" data-info="Buses carry audio from sends — they hold no clips" />
+          : <>
+              <div className="slots">
+                {scenes.toArray().map(s => (
+                  <ClipSlot key={s.get('id')} track={t} sceneId={s.get('id')} />
+                ))}
+              </div>
+              <button className="track-stop" data-info="Stop this track's clip" onClick={() => engine.stopClip(t.get('id'))}><Icon name="stopOutline" size={11} /></button>
+            </>}
+      </div>
+    )
+  }
+
   return (
     <div className="session" onClick={e => { if (e.target === e.currentTarget) selectClip(null) }}>
       <div className="session-scroll">
-        {tracks.toArray().map(t => {
-          const isBus = t.get('kind') === 'bus'
-          return (
-            <div className={`track-col ${isBus ? 'bus-col' : ''}`} key={t.get('id')}>
-              <TrackHeader track={t} />
-              {isBus
-                ? <div className="slots bus-slots" data-info="Buses carry audio from sends — they hold no clips" />
-                : <>
-                    <div className="slots">
-                      {scenes.toArray().map(s => (
-                        <ClipSlot key={s.get('id')} track={t} sceneId={s.get('id')} />
-                      ))}
-                    </div>
-                    <button className="track-stop" data-info="Stop this track's clip" onClick={() => engine.stopClip(t.get('id'))}><Icon name="stopOutline" size={11} /></button>
-                  </>}
-            </div>
-          )
-        })}
+        {instr.map(t => trackCol(t))}
 
         <div className="track-col add-col">
           <div className="add-track-box">
@@ -350,7 +358,9 @@ export function SessionView() {
           </div>
         </div>
 
-        <div className="track-col scene-col">
+        {buses.map((t, bi) => trackCol(t, bi === 0))}
+
+        <div className={`track-col scene-col ${buses.length ? '' : 'push'}`}>
           {/* Master sits at the top styled like a track header, so the scene
               launch buttons below line up row-for-row with the clip slots. */}
           <div className="track-head master-head" data-info="Master output, analyzer & volume">

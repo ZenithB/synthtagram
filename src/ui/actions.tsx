@@ -6,7 +6,7 @@ import {
   addTrack, addScene, clipKey, clips, duplicateClipTo, getClipMap, clipToJSON,
   jsonToClipMap, loadProject, mutate, scenes, setInstrument, trackById, ClipJSON, TrackJSON,
   addAudioTrack, createAudioClip, addBusTrack, tracks, busCanReach, setTrackOutput, setBusSend,
-  setTrackColor, duplicateTrack, moveTrack, removeTrack,
+  setTrackColor, duplicateTrack, moveTrack, removeTrack, assignDrumKit, addArrClip,
 } from '../state/doc'
 import { ColorRow, MenuItem } from './widgets'
 import { setUI, toast, ui } from '../state/store'
@@ -14,6 +14,7 @@ import { setPresence } from '../state/net'
 import { engine } from '../audio/engine'
 import { meta } from '../state/doc'
 import { importSampleFile, getSampleBuffer } from '../audio/samples'
+import { DRUM_PACKS, packSampleId, ROLE_LABEL, RoleName } from '../audio/drumpacks'
 import { DEFAULT_PROJECT, demoProject, DRUM_KITS, InstPreset, MidiLoop, Progression, progressionClip, clipInKey } from '../packs'
 
 // Shared track-header right-click menu, so Session and Arrangement headers offer
@@ -21,15 +22,59 @@ import { DEFAULT_PROJECT, demoProject, DRUM_KITS, InstPreset, MidiLoop, Progress
 // `vertical` flips the reorder labels (Session = columns, Arrangement = rows).
 export function trackHeaderMenu(trackId: string, onRename: () => void, vertical = false): MenuItem[] {
   const t = trackById(trackId)
-  return [
+  const locked = !!t?.get('locked')   // built-in A/B buses: no duplicate / delete
+  const items: MenuItem[] = [
     { label: 'Rename', fn: onRename },
     { custom: <ColorRow colors={CLIP_COLORS} onPick={i => setTrackColor(trackId, i)} /> },
-    { label: 'Duplicate track', fn: () => duplicateTrack(trackId) },
-    { label: vertical ? '↑ Move up' : '← Move left', fn: () => moveTrack(trackId, -1) },
-    { label: vertical ? '↓ Move down' : '→ Move right', fn: () => moveTrack(trackId, 1) },
-    'sep',
-    { label: 'Delete track', fn: () => { if (confirm(`Delete "${t?.get('name')}"?`)) removeTrack(trackId) }, danger: true },
   ]
+  if (!locked) {
+    items.push(
+      { label: 'Duplicate track', fn: () => duplicateTrack(trackId) },
+      { label: vertical ? '↑ Move up' : '← Move left', fn: () => moveTrack(trackId, -1) },
+      { label: vertical ? '↓ Move down' : '→ Move right', fn: () => moveTrack(trackId, 1) },
+      'sep',
+      { label: 'Delete track', fn: () => { if (confirm(`Delete "${t?.get('name')}"?`)) removeTrack(trackId) }, danger: true },
+    )
+  }
+  return items
+}
+
+// Drop a whole sampled kit onto a drum track: kick→kick, snare→snare, hats→hats,
+// clap→clap (or a 2nd snare if the kit has none), perc→perc (or a high tom if
+// none). The device's pads become samplers for these sounds.
+export function assignKitToTrack(trackId: string, kitId: string) {
+  const t = trackById(trackId)
+  if (!t || t.get('kind') !== 'drum') { toast('Drop drum kits onto a drum track'); return }
+  const pack = DRUM_PACKS.find(p => p.id === kitId)
+  if (!pack) return
+  const has = (r: RoleName) => !!pack.roles[r]
+  const sid = (r: RoleName) => packSampleId(kitId, r)
+  const nm = (r: RoleName) => `${pack.name} ${ROLE_LABEL[r]}`
+  const a: { pad: number; sampleId: string | null; name: string; tune?: number }[] = []
+  const put = (pad: number, r: RoleName, tune = 0) => a.push({ pad, sampleId: sid(r), name: nm(r), tune })
+  const clear = (pad: number) => a.push({ pad, sampleId: null, name: '' })
+  put(0, 'kick'); put(1, 'snare')
+  has('clap') ? put(2, 'clap') : put(2, 'snare')                 // no clap → another snare
+  put(3, 'chat'); put(4, 'ohat')
+  has('tom') ? put(5, 'tom') : clear(5)
+  has('perc') ? put(6, 'perc') : has('tom') ? put(6, 'tom', 7) : clear(6) // no perc → high tom
+  has('crash') ? put(7, 'crash') : clear(7)
+  assignDrumKit(trackId, a, `Kit: ${pack.name}`)
+  setUI({ selTrackId: trackId, detailOpen: true, detailTab: 'devices' })
+  toast(`${pack.name} → ${t.get('name')}`)
+}
+
+/** Place a sample as an audio clip on an arrangement track at a tick position. */
+export function addSampleToArr(trackId: string, atTicks: number, sampleId: string, name: string) {
+  const buf = getSampleBuffer(sampleId)
+  const bpm = meta.get('bpm') ?? 120
+  const durSec = buf?.duration ?? 0.5
+  const durTicks = Math.max(BAR / 8, Math.round(durSec * (bpm / 60) * 96))
+  addArrClip(trackId, Math.max(0, atTicks), {
+    name, color: 5, len: durTicks, notes: {},
+    audio: { sampleId, sampleName: name, gainDb: 0, pitch: 0, rev: 0, loop: 0, fadeIn: 0, fadeOut: 0, offset: 0, dur: 0, cents: 0, xfade: 0 },
+  }, 'Sample to arrangement')
+  toast(`“${name}” → arrangement`)
 }
 
 export function selectTrack(trackId: string | null) {

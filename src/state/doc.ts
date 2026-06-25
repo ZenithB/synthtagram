@@ -69,6 +69,8 @@ export type TrackJSON = {
   sendA?: number; sendB?: number
   output?: string                       // routing target for buses: 'master' | busTrackId
   sends?: Record<string, number>        // busTrackId → send level (sends into user buses)
+  locked?: boolean                      // built-in (e.g. the A/B send buses) — cannot be deleted
+  send?: 'A' | 'B'                      // marks the built-in A/B send buses (id-independent)
   lfos?: LfoJSON[]; macros?: MacroJSON[]; midifx?: MidiFxJSON[]
   // arrangement automation: paramId ("dest|fxId|pkey") → breakpoints in absolute song ticks
   auto?: Record<string, { t: number; v: number }[]>
@@ -82,6 +84,14 @@ export type ProjectJSON = {
   arr: Record<string, ClipJSON & { trackId: string; start: number }>
   returns?: ReturnJSON[]
 }
+
+// The two built-in send buses every session starts with — undeletable, full fx
+// chains. A track's A/B sends route into these (A = reverb, B = ping-pong delay).
+// Tagged with `send` so the engine finds them by marker, not by (regenerated) id.
+export const DEFAULT_BUSES: TrackJSON[] = [
+  { id: 'busA', name: 'A', color: 7, kind: 'bus', inst: { type: 'audiobus', params: {} }, fx: [{ type: 'reverb', on: true, params: { size: 3.6, mix: 1 } }], gain: 0, pan: 0, mute: false, solo: false, output: 'master', locked: true, send: 'A' },
+  { id: 'busB', name: 'B', color: 9, kind: 'bus', inst: { type: 'audiobus', params: {} }, fx: [{ type: 'pingpong', on: true, params: { time: 3, fb: 0.4, mix: 1 } }], gain: 0, pan: 0, mute: false, solo: false, output: 'master', locked: true, send: 'B' },
+]
 
 // ---------- Y builders ----------
 function yNotes(notes: Record<string, Note>) {
@@ -210,6 +220,8 @@ function yTrack(t: TrackJSON) {
   const sends = new Y.Map<number>()
   if (t.sends) for (const [k, v] of Object.entries(t.sends)) sends.set(k, v)
   m.set('sends', sends)
+  if (t.locked) m.set('locked', true)
+  if (t.send) m.set('send', t.send)
   if (t.auto && Object.keys(t.auto).length) {
     const am = new Y.Map<any>()
     for (const [k, pts] of Object.entries(t.auto)) { const a = new Y.Array<any>(); a.push(pts.map(p => ({ ...p }))); am.set(k, a) }
@@ -281,6 +293,7 @@ export function addTrack(t: TrackJSON): string {
 }
 
 export function removeTrack(trackId: string) {
+  if (trackById(trackId)?.get('locked')) return   // built-in A/B send buses can't be deleted
   mutate('Delete track', () => {
     const i = trackIndex(trackId)
     if (i >= 0) tracks.delete(i)
@@ -296,25 +309,11 @@ export function removeTrack(trackId: string) {
 export function duplicateTrack(trackId: string): string | null {
   const t = trackById(trackId)
   if (!t) return null
-  const di = t.get('inst') as Y.Map<any>
-  const dps = di.get('padSamples') as Y.Map<string> | undefined
-  const dpn = di.get('padNames') as Y.Map<string> | undefined
-  const json: TrackJSON = {
-    name: t.get('name') + ' copy', color: t.get('color'), kind: t.get('kind'),
-    inst: {
-      type: di.get('type'), params: Object.fromEntries((di.get('params') as Y.Map<number>).entries()),
-      out: di.get('out') ?? 0,
-      ...(di.get('sampleId') ? { sampleId: di.get('sampleId'), sampleName: di.get('sampleName') ?? '' } : {}),
-      ...(dps && dps.size ? { padSamples: Object.fromEntries(dps.entries()), padNames: dpn ? Object.fromEntries(dpn.entries()) : {} } : {}),
-    },
-    fx: (t.get('fx') as Y.Array<Y.Map<any>>).toArray().map(f => ({
-      type: f.get('type'), on: f.get('on'),
-      params: Object.fromEntries((f.get('params') as Y.Map<number>).entries()),
-    })),
-    gain: t.get('gain'), pan: t.get('pan'), mute: t.get('mute'), solo: false,
-  }
   const newId = id8()
-  json.id = newId
+  // full deep copy via toJSON (keeps sends/output/lfos/macros/midifx/automation/
+  // pad-samples), minus the built-in A/B markers — a copy must not be a 2nd locked send bus.
+  const json = { ...(t.toJSON() as TrackJSON), id: newId, name: t.get('name') + ' copy', solo: false }
+  delete json.locked; delete json.send
   const m = yTrack(json)
   mutate('Duplicate track', () => {
     const i = trackIndex(trackId)
@@ -335,17 +334,15 @@ export const setTrackColor = (trackId: string, color: number) =>
   mutate('Track color', () => trackById(trackId)?.set('color', color))
 
 export function moveTrack(trackId: string, dir: -1 | 1) {
+  if (trackById(trackId)?.get('locked')) return   // pinned A/B buses don't reorder
   const i = trackIndex(trackId)
   const j = i + dir
   if (i < 0 || j < 0 || j >= tracks.length) return
   mutate('Move track', () => {
-    const t = tracks.get(i)
-    const json = t.toJSON()
-    // Y arrays can't move; delete + reinsert a deep copy
-    const fresh = yTrack({
-      id: json.id, name: json.name, color: json.color, kind: json.kind,
-      inst: json.inst, fx: json.fx ?? [], gain: json.gain, pan: json.pan, mute: json.mute, solo: json.solo,
-    })
+    // Y arrays can't move; delete + reinsert a FULL deep copy so routing (sends/
+    // output), the locked/send markers, lfos/macros/midifx, automation and pad
+    // samples all survive the reorder (a subset copy silently dropped them).
+    const fresh = yTrack(tracks.get(i).toJSON() as TrackJSON)
     tracks.delete(i)
     tracks.insert(j, [fresh])
   })
@@ -524,27 +521,10 @@ export function lfosOf(t: Y.Map<any>): Y.Array<Y.Map<any>> | undefined {
 // ---------- send / return buses ----------
 export const returns = doc.getArray<Y.Map<any>>('returns')
 
-function yReturn(name: string, fxType: string, params: Record<string, number>) {
-  const m = new Y.Map<any>()
-  m.set('id', id8())
-  m.set('name', name)
-  m.set('fxType', fxType)
-  const pm = new Y.Map<number>()
-  for (const [k, v] of Object.entries(params)) pm.set(k, v)
-  m.set('params', pm)
-  m.set('gain', 0)
-  return m
-}
-
-export function ensureReturns() {
-  if (returns.length > 0) return
-  mutate('Init returns', () => {
-    returns.push([
-      yReturn('A · Reverb', 'reverb', { size: 3.6, mix: 1 }),
-      yReturn('B · Delay', 'pingpong', { time: 3, fb: 0.4, mix: 1 }),
-    ])
-  })
-}
+// Send A/B are now built-in bus tracks (see DEFAULT_BUSES), so we no longer seed
+// the legacy return channels. Old projects that saved `returns` still load them
+// (loadProject) and the engine falls back to wiring the A/B sends into them.
+export function ensureReturns() { /* no-op: A/B are bus tracks now */ }
 export function returnAt(i: number): Y.Map<any> | undefined { return returns.get(i) }
 export function setReturnGain(i: number, v: number) {
   mutate('Return volume', () => returns.get(i)?.set('gain', v))
@@ -819,6 +799,29 @@ export function setDrumPadSample(trackId: string, pad: number, sampleId: string 
     } else {
       ;(inst.get('padSamples') as Y.Map<string> | undefined)?.delete(key)
       ;(inst.get('padNames') as Y.Map<string> | undefined)?.delete(key)
+    }
+  })
+}
+
+/** Map a whole sampled kit onto a drum track's pads in one undoable step. */
+export function assignDrumKit(trackId: string, assigns: { pad: number; sampleId: string | null; name: string; tune?: number }[], label = 'Load drum kit') {
+  mutate(label, () => {
+    const t = trackById(trackId); if (!t) return
+    const inst = t.get('inst') as Y.Map<any>
+    let ps = inst.get('padSamples') as Y.Map<string> | undefined
+    let pn = inst.get('padNames') as Y.Map<string> | undefined
+    const params = inst.get('params') as Y.Map<number>
+    for (const a of assigns) {
+      const key = String(a.pad)
+      if (a.sampleId) {
+        if (!ps) { ps = new Y.Map<string>(); inst.set('padSamples', ps) }
+        if (!pn) { pn = new Y.Map<string>(); inst.set('padNames', pn) }
+        ps.set(key, a.sampleId); pn.set(key, a.name)
+        params.set(`p${a.pad}_tune`, a.tune ?? 0)
+      } else {
+        ps?.delete(key); pn?.delete(key)
+        params.set(`p${a.pad}_tune`, 0)   // reverting to synth: clear any leftover tune offset
+      }
     }
   })
 }
@@ -1123,6 +1126,8 @@ export function exportProject(): ProjectJSON {
         })),
         gain: t.get('gain'), pan: t.get('pan'), mute: t.get('mute'), solo: t.get('solo'),
         sendA: t.get('sendA') ?? 0, sendB: t.get('sendB') ?? 0,
+        ...(t.get('locked') ? { locked: true } : {}),
+        ...(t.get('send') ? { send: t.get('send') } : {}),
         output: t.get('output') ?? 'master',
         sends: (() => { const sm = t.get('sends') as Y.Map<number> | undefined; const o: Record<string, number> = {}; sm?.forEach((v, k) => { o[k] = v }); return o })(),
         lfos, macros, midifx,
@@ -1172,12 +1177,23 @@ export function loadProject(json: ProjectJSON, label = 'Load project') {
     // id remapping (packs may use friendly ids)
     const tidMap = new Map<string, string>()
     const sidMap = new Map<string, string>()
+    // pass 1: allocate fresh ids so bus-routing refs (output target + sends keys,
+    // which hold bus track ids) can be remapped — including forward references.
+    const idFor = (t: TrackJSON) => t.id ?? t.name
+    for (const t of json.tracks) tidMap.set(idFor(t), id8())
+    // pass 2: build tracks, remapping bus output + sends keys through tidMap
     for (const t of json.tracks) {
-      const tid = id8()
-      const m = yTrack({ ...t, id: tid })
-      tidMap.set(t.id ?? t.name, tid)
-      tracks.push([m])
+      const tid = tidMap.get(idFor(t))!
+      const output = t.output && t.output !== 'master' ? (tidMap.get(t.output) ?? 'master') : (t.output ?? 'master')
+      const sends = t.sends
+        ? Object.fromEntries(Object.entries(t.sends).flatMap(([k, v]) => { const nk = tidMap.get(k); return nk ? [[nk, v]] : [] }))
+        : t.sends
+      tracks.push([yTrack({ ...t, id: tid, output, sends })])
     }
+    // migration: ensure the built-in A/B send buses exist (projects predating them,
+    // or imports lacking them) so each track's A/B sends always resolve to a bus.
+    const haveSend = (s: 'A' | 'B') => json.tracks.some(t => t.kind === 'bus' && t.send === s)
+    for (const b of DEFAULT_BUSES) if (!haveSend(b.send!)) tracks.push([yTrack({ ...b, id: id8() })])
     for (const s of json.scenes) {
       const m = new Y.Map<any>()
       const sid = id8()

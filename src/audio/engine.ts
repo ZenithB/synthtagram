@@ -343,8 +343,11 @@ class Engine {
     }).connect(this.master)
     t.scheduleRepeat(time => {
       if (!ui.metronome) return
-      const ticks = t.getTicksAtTime(time)
-      const accent = ticks % BAR === 0
+      // getTicksAtTime returns fractional ticks; round to the nearest beat so the
+      // downbeat (every 4th beat = bar start) reliably accents instead of drifting
+      // off the exact tick after the first hit.
+      const beat = Math.round(t.getTicksAtTime(time) / (BAR / 4))
+      const accent = (((beat % 4) + 4) % 4) === 0
       this.metro.triggerAttackRelease(accent ? 1760 : 1175, 0.03, time, accent ? 0.5 : 0.25)
     }, '4n')
 
@@ -685,6 +688,8 @@ class Engine {
         }
       }
     })
+    // 3) the built-in A/B sends feed busA/busB — (re)wire now that buses exist.
+    this.built.forEach(rec => this.wireSends(rec))
   }
 
   /** Mute = own mute OR (some track soloed AND this one isn't). Engine-coordinated. */
@@ -696,11 +701,24 @@ class Engine {
     }
   }
 
+  // The per-track A/B sends feed the two built-in bus tracks (busA/busB). Old
+  // projects without those buses fall back to the legacy return channels. Bus
+  // tracks themselves are skipped so a bus can't send into itself (feedback).
+  /** Input node of the built-in A or B send bus (tagged track.send), if present. */
+  private sendBusInput(which: 'A' | 'B'): Tone.ToneAudioNode | null {
+    for (const t of tracks.toArray()) {
+      if (t.get('kind') === 'bus' && t.get('send') === which) return this.busInputOf(t.get('id'))
+    }
+    return null
+  }
   private wireSends(rec: BuiltTrack) {
     try { rec.sendA.disconnect() } catch { /* ok */ }
     try { rec.sendB.disconnect() } catch { /* ok */ }
-    if (this.builtReturns[0]) rec.sendA.connect(this.builtReturns[0].fx.node)
-    if (this.builtReturns[1]) rec.sendB.connect(this.builtReturns[1].fx.node)
+    if (rec.kind === 'bus') return
+    const aIn = this.sendBusInput('A') ?? this.builtReturns[0]?.fx.node
+    const bIn = this.sendBusInput('B') ?? this.builtReturns[1]?.fx.node
+    if (aIn) rec.sendA.connect(aIn)
+    if (bIn) rec.sendB.connect(bIn)
   }
 
   // ---------------- return buses ----------------
@@ -1540,6 +1558,16 @@ class Engine {
       chord.forEach(p => inst.trigger(p, chordDur * 0.92, now + i * chordDur, 0.75))
     })
     setTimeout(() => { try { inst.dispose() } catch { /* ok */ } }, (chords.length * chordDur + 2) * 1000)
+  }
+
+  /** Play a sample once (browser audition / preview). */
+  async auditionSample(sampleId: string) {
+    await this.ensureStarted()
+    const buf = getSampleBuffer(sampleId)
+    if (!buf) return
+    const p = new Tone.Player(buf).connect(this.master)
+    p.start()
+    setTimeout(() => { try { p.dispose() } catch { /* ok */ } }, (buf.duration + 0.4) * 1000)
   }
 
   /** Quick preset audition from the browser, without touching any track. */

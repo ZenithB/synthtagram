@@ -12,8 +12,9 @@ import {
   addMidiFx, removeMidiFx, setMidiFxParam, setMidiFxOn, midifxOf,
   ensureMacros, macrosOf, setMacroValue, addMacroTarget, clearMacroTargets, setMacroName,
   returns, setReturnGain, setReturnParam, setReturnFxType, setSamplerSample, setDrumPadSample, busList,
+  clips, clipKey, isAudioClip,
 } from '../state/doc'
-import { attemptBusSend } from './actions'
+import { attemptBusSend, assignKitToTrack } from './actions'
 import { useUI, toast } from '../state/store'
 import { useY, useRaf } from './hooks'
 import { Knob, openMenu } from './widgets'
@@ -217,7 +218,9 @@ function InstrumentPanel({ trackId, track }: { trackId: string; track: Y.Map<any
       {type === 'sampler' && <SamplerControls trackId={trackId} inst={inst} />}
 
       {kind === 'drum' ? (
-        <div className="drum-panel">
+        <div className="drum-panel"
+          onDragOver={e => { if (e.dataTransfer.types.includes('stg/drumkit')) e.preventDefault() }}
+          onDrop={e => { const dk = e.dataTransfer.getData('stg/drumkit'); if (dk) assignKitToTrack(trackId, dk) }}>
           <div className="pad-grid">
             {DRUM_PADS.map((name, i) => {
               const sampled = !!padSamples?.get(String(i))
@@ -226,9 +229,22 @@ function InstrumentPanel({ trackId, track }: { trackId: string; track: Y.Map<any
                   key={i}
                   className={`pad ${pad === i ? 'on' : ''} ${sampled ? 'sampled' : ''}`}
                   data-info={sampled
-                    ? `${name} → sample “${padNames?.get(String(i)) || 'audio'}”. Right-click to replace or clear.`
-                    : `${name} — click to audition. Right-click to drop an audio clip on this pad.`}
+                    ? `${name} → sample “${padNames?.get(String(i)) || 'audio'}”. Right-click to replace or clear. Drop a sample to assign.`
+                    : `${name} — click to audition. Right-click or drop a drum sample here to assign it.`}
                   onClick={() => { setPad(i); engine.previewOn(trackId, i, 0.9) }}
+                  onDragOver={e => { const ty = e.dataTransfer.types; if (ty.includes('stg/sample') || ty.includes('stg/clip')) { e.preventDefault(); e.stopPropagation() } }}
+                  onDrop={e => {
+                    e.stopPropagation()
+                    const s = e.dataTransfer.getData('stg/sample')
+                    if (s) { const [sid, nm] = s.split('::'); setDrumPadSample(trackId, i, sid, nm || 'Sample'); return }
+                    const clipSrc = e.dataTransfer.getData('stg/clip')
+                    if (clipSrc) {
+                      const [srcT, srcS] = clipSrc.split('|')
+                      const cm = clips.get(clipKey(srcT, srcS)) as Y.Map<any> | undefined
+                      if (cm && isAudioClip(cm)) setDrumPadSample(trackId, i, cm.get('sampleId'), cm.get('sampleName') || 'Sample')
+                      else toast('Only audio clips can be routed to a pad')
+                    }
+                  }}
                   onContextMenu={e => openMenu(e, [
                     { label: <><Icon name="sampler" size={12} /> {sampled ? 'Replace sample…' : 'Load audio clip…'}</>, fn: () => pickPadSample(i) },
                     ...(sampled ? [{ label: <><Icon name="close" size={12} /> Clear sample (back to synth)</>, fn: () => setDrumPadSample(trackId, i, null), danger: true }] : []),
@@ -353,7 +369,8 @@ function MidiFxCard({ trackId, fx }: { trackId: string; fx: Y.Map<any> }) {
 
 function SendsCard({ trackId, track }: { trackId: string; track: Y.Map<any> }) {
   const sends = track.get('sends') as Y.Map<number> | undefined
-  const buses = busList().filter(b => b.get('id') !== trackId)   // a bus can't send to itself
+  // exclude self and the built-in A/B buses (those are the dedicated →A/→B knobs)
+  const buses = busList().filter(b => b.get('id') !== trackId && !b.get('locked'))
   return (
     <div className="device sends-device">
       <div className="device-head"><span className="device-title"><Icon name="send" size={13} /> Sends</span></div>

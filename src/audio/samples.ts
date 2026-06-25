@@ -5,6 +5,7 @@
 
 import { nanoid } from 'nanoid'
 import * as Tone from 'tone'
+import { synthDrumSample, parsePackId, packSampleName } from './drumpacks'
 
 const mem = new Map<string, AudioBuffer>()
 const pending = new Set<string>()
@@ -54,6 +55,15 @@ export function getSampleBuffer(id: string): AudioBuffer | undefined {
   if (!id) return undefined
   const b = mem.get(id)
   if (b) return b
+  // virtual drum-pack samples (`dp:kit:role`) are synthesized on demand — no
+  // IndexedDB, no download; deterministic so they reproduce live, in exports and
+  // for collaborators.
+  if (id.startsWith('dp:')) {
+    const p = parsePackId(id)
+    const buf = p ? synthDrumSample(p.kitId, p.role) : undefined
+    if (buf) mem.set(id, buf)
+    return buf
+  }
   if (!pending.has(id)) {
     pending.add(id)
     idbGet(id).then(async rec => {
@@ -70,7 +80,7 @@ export function getSampleBuffer(id: string): AudioBuffer | undefined {
   return undefined
 }
 
-export function sampleName(id: string) { return id }
+export function sampleName(id: string) { return id.startsWith('dp:') ? packSampleName(id) : id }
 
 async function store(name: string, bytes: ArrayBuffer): Promise<{ id: string; name: string }> {
   const id = nanoid(10)

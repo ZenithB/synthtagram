@@ -191,6 +191,14 @@ button { cursor: pointer; background: none; border: none; }
 .bitem-icon { display: inline-flex; color: var(--dim); flex-shrink: 0; }
 .bitem:hover .bitem-icon { color: var(--accent); }
 .bitem-sub { margin-left: auto; color: var(--dim); font-size: 9px; max-width: 80px; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; }
+.bpack { margin: 1px 0; }
+.bpack-head { display: flex; align-items: center; gap: 6px; padding: 5px 12px; cursor: grab; border-radius: 4px; margin: 0 4px; font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; }
+.bpack-head:hover { background: var(--bg2); }
+.bpack-head:active { cursor: grabbing; }
+.bpack-head .bitem-icon { color: var(--accent2); }
+.bpack-body { padding-left: 10px; border-left: 1px solid var(--border); margin: 1px 0 3px 14px; }
+.bitem.bsample { padding-left: 14px; font-size: 11px; }
+.bitem.bsample .bitem-icon { color: var(--accent2); }
 .bbtn {
   display: flex; align-items: center; gap: 8px; width: calc(100% - 24px); margin: 5px 12px; text-align: left;
   background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 7px 10px; color: var(--text);
@@ -268,7 +276,8 @@ button { cursor: pointer; background: none; border: none; }
 .feedback-sub { color: var(--dim); font-size: 12px; line-height: 1.4; }
 .feedback-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px; }
 
-.scene-col { width: 118px; margin-left: auto; }
+.scene-col { width: 118px; }
+.track-col.push { margin-left: auto; }   /* leader of the right-aligned group (buses + master) */
 .master-head { cursor: default; display: flex; flex-direction: column; align-items: center; gap: 5px; border-top-color: var(--accent2); }
 .master-head .track-title { justify-content: center; margin-bottom: 0; min-height: 0; }
 .scene-cell { height: 34px; display: flex; align-items: center; gap: 5px; background: var(--bg1); border: 1px solid var(--border); border-radius: 5px; padding: 0 6px; }
