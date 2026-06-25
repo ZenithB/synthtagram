@@ -11,7 +11,7 @@ import {
   addLfo, removeLfo, setLfoField, setLfoTarget, setSend,
   addMidiFx, removeMidiFx, setMidiFxParam, setMidiFxOn, midifxOf,
   ensureMacros, macrosOf, setMacroValue, addMacroTarget, clearMacroTargets, setMacroName,
-  returns, setReturnGain, setReturnParam, setReturnFxType, setSamplerSample, busList,
+  returns, setReturnGain, setReturnParam, setReturnFxType, setSamplerSample, setDrumPadSample, busList,
 } from '../state/doc'
 import { attemptBusSend } from './actions'
 import { useUI, toast } from '../state/store'
@@ -150,6 +150,21 @@ function InstrumentPanel({ trackId, track }: { trackId: string; track: Y.Map<any
   const schema = instSchema(type)
   const kind = track.get('kind')
   const [pad, setPad] = useState(0)
+  const padSamples = inst.get('padSamples') as Y.Map<string> | undefined
+  const padNames = inst.get('padNames') as Y.Map<string> | undefined
+
+  // Right-click a drum pad → drop an audio clip on it (that pad becomes a
+  // sampler; the rest of the kit stays synthesized).
+  const pickPadSample = (i: number) => {
+    const input = document.createElement('input')
+    input.type = 'file'; input.accept = 'audio/*'
+    input.onchange = async () => {
+      const f = input.files?.[0]; if (!f) return
+      try { const ref = await importSampleFile(f); setDrumPadSample(trackId, i, ref.id, ref.name); toast(`${DRUM_PADS[i]} → “${ref.name}”`) }
+      catch { toast('Could not decode that audio file') }
+    }
+    input.click()
+  }
 
   const presetMatches = (kind === 'drum' ? [] : INST_PRESETS).map(p => p.name)
   const kitNames = DRUM_KITS.map(k => k.name)
@@ -204,16 +219,26 @@ function InstrumentPanel({ trackId, track }: { trackId: string; track: Y.Map<any
       {kind === 'drum' ? (
         <div className="drum-panel">
           <div className="pad-grid">
-            {DRUM_PADS.map((name, i) => (
-              <button
-                key={i}
-                className={`pad ${pad === i ? 'on' : ''}`}
-                data-info={`${name} — click to audition & edit (keys A–K play pads)`}
-                onClick={() => { setPad(i); engine.previewOn(trackId, i, 0.9) }}
-              >
-                {name}
-              </button>
-            ))}
+            {DRUM_PADS.map((name, i) => {
+              const sampled = !!padSamples?.get(String(i))
+              return (
+                <button
+                  key={i}
+                  className={`pad ${pad === i ? 'on' : ''} ${sampled ? 'sampled' : ''}`}
+                  data-info={sampled
+                    ? `${name} → sample “${padNames?.get(String(i)) || 'audio'}”. Right-click to replace or clear.`
+                    : `${name} — click to audition. Right-click to drop an audio clip on this pad.`}
+                  onClick={() => { setPad(i); engine.previewOn(trackId, i, 0.9) }}
+                  onContextMenu={e => openMenu(e, [
+                    { label: <><Icon name="sampler" size={12} /> {sampled ? 'Replace sample…' : 'Load audio clip…'}</>, fn: () => pickPadSample(i) },
+                    ...(sampled ? [{ label: <><Icon name="close" size={12} /> Clear sample (back to synth)</>, fn: () => setDrumPadSample(trackId, i, null), danger: true }] : []),
+                  ])}
+                >
+                  {name}
+                  {sampled && <span className="pad-sample-dot" />}
+                </button>
+              )
+            })}
           </div>
           <div className="knob-row">
             {['tune', 'decay', 'level'].map(suffix => {

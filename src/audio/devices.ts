@@ -292,17 +292,46 @@ function blipPad(mix: Tone.Gain, baseHz: number, decay0: number): Pad {
   }
 }
 
-function makeDrum(p: Record<string, number>): Inst {
+// A drum pad backed by an audio sample (one-shot). Polyphonic + velocity via
+// Tone.Sampler (same engine the Sampler instrument uses); `tune` repitches in
+// semitones, `level` is the pad gain. The full sample always plays (decay is a
+// no-op here). Drops into the same Pad slot as the synth voices.
+function samplePad(mix: Tone.Gain, buffer: AudioBuffer, level0: number, tune0: number): Pad {
+  let tune = tune0
+  const level = new Tone.Gain(Tone.dbToGain(level0)).connect(mix)
+  const sampler = new Tone.Sampler({
+    urls: { C3: new Tone.ToneAudioBuffer(buffer) },
+    attack: 0.001, release: 0.06,
+  }).connect(level)
+  const note = () => Tone.Frequency(48 + tune, 'midi').toFrequency() // C3 = midi 48 → natural pitch
+  return {
+    trig: (time, vel) => { try { sampler.triggerAttack(note(), time, vel) } catch { /* overlapping retrigger */ } },
+    set: (which, v) => {
+      if (which === 'tune') tune = v
+      else if (which === 'level') level.gain.value = Tone.dbToGain(v)
+      // 'decay' has no effect on a sampled pad (the whole sample plays)
+    },
+    dispose: () => { sampler.dispose(); level.dispose() },
+  }
+}
+
+function makeDrum(p: Record<string, number>, padBuffers?: Map<number, AudioBuffer>): Inst {
   const mix = new Tone.Gain(1)
+  // Each pad is synthesized unless a sample has been dropped on it, in which
+  // case that one pad plays the sample while the rest stay synths.
+  const padOr = (i: number, synth: () => Pad): Pad => {
+    const buf = padBuffers?.get(i)
+    return buf ? samplePad(mix, buf, p[`p${i}_level`] ?? 0, p[`p${i}_tune`] ?? 0) : synth()
+  }
   const pads: Pad[] = [
-    membranePad(mix, 36, p.p0_decay, 0.05),  // kick
-    noisePad(mix, 'snare', p.p1_decay),      // snare
-    noisePad(mix, 'clap', p.p2_decay),       // clap
-    noisePad(mix, 'clhat', p.p3_decay),      // closed hat
-    noisePad(mix, 'ophat', p.p4_decay),      // open hat
-    membranePad(mix, 48, p.p5_decay, 0.03),  // lo tom
-    blipPad(mix, 1100, p.p6_decay),          // perc
-    noisePad(mix, 'crash', p.p7_decay),      // crash
+    padOr(0, () => membranePad(mix, 36, p.p0_decay, 0.05)),  // kick
+    padOr(1, () => noisePad(mix, 'snare', p.p1_decay)),      // snare
+    padOr(2, () => noisePad(mix, 'clap', p.p2_decay)),       // clap
+    padOr(3, () => noisePad(mix, 'clhat', p.p3_decay)),      // closed hat
+    padOr(4, () => noisePad(mix, 'ophat', p.p4_decay)),      // open hat
+    padOr(5, () => membranePad(mix, 48, p.p5_decay, 0.03)),  // lo tom
+    padOr(6, () => blipPad(mix, 1100, p.p6_decay)),          // perc
+    padOr(7, () => noisePad(mix, 'crash', p.p7_decay)),      // crash
   ]
   pads.forEach((pad, i) => {
     pad.set('tune', p[`p${i}_tune`] ?? 0)
@@ -355,7 +384,7 @@ function makeAudioBus(): Inst {
   return { out: bus, set: () => {}, noteOn: () => {}, noteOff: () => {}, trigger: () => {}, dispose: () => bus.dispose() }
 }
 
-export function makeInstrument(type: string, params: Record<string, number>, buffer?: AudioBuffer): Inst {
+export function makeInstrument(type: string, params: Record<string, number>, buffer?: AudioBuffer, padBuffers?: Map<number, AudioBuffer>): Inst {
   switch (type) {
     case 'fm': return makeFm(params)
     case 'mono': return makeMono(params)
@@ -364,7 +393,7 @@ export function makeInstrument(type: string, params: Record<string, number>, buf
     case 'duo': return makeDuo(params)
     case 'sampler': return makeSampler(params, buffer)
     case 'audiobus': return makeAudioBus()
-    case 'drum': return makeDrum(params)
+    case 'drum': return makeDrum(params, padBuffers)
     default: return makePoly(params)
   }
 }

@@ -371,9 +371,12 @@ button { cursor: pointer; background: none; border: none; }
 .add-fx:hover { color: var(--accent); border-color: var(--accent); }
 .drum-panel { display: flex; gap: 10px; align-items: center; }
 .pad-grid { display: grid; grid-template-columns: repeat(4, 52px); gap: 4px; }
-.pad { height: 30px; background: var(--bg2); border: 1px solid var(--border); border-radius: 5px; font-size: 10px; color: var(--dim); }
+.pad { position: relative; height: 30px; background: var(--bg2); border: 1px solid var(--border); border-radius: 5px; font-size: 10px; color: var(--dim); }
 .pad:hover { color: var(--text); }
 .pad.on { border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--bg2)); }
+.pad.sampled { border-color: var(--accent2); color: var(--accent2); }
+.pad.sampled.on { background: color-mix(in srgb, var(--accent2) 12%, var(--bg2)); }
+.pad-sample-dot { position: absolute; top: 3px; right: 3px; width: 5px; height: 5px; border-radius: 50%; background: var(--accent2); }
 
 /* knobs */
 .knob { display: flex; flex-direction: column; align-items: center; position: relative; padding: 2px 0; }
@@ -647,7 +650,15 @@ button { cursor: pointer; background: none; border: none; }
 .audio-body { flex: 1; min-height: 0; display: flex; gap: 10px; padding: 10px; }
 .wave-box { flex: 1; min-width: 0; background: var(--bg0); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
 .wave-box canvas { display: block; width: 100%; height: 100%; }
-.audio-knobs { display: flex; gap: 6px; align-items: flex-start; flex-wrap: wrap; max-width: 200px; }
+.audio-knobs { display: flex; gap: 10px; align-items: flex-start; flex-wrap: wrap; max-width: 240px; }
+.wave-box canvas { cursor: crosshair; }
+.audio-pitch { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.audio-pitch-label { font-size: 10px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.5px; }
+.audio-pitch-row { display: flex; align-items: center; gap: 3px; }
+.audio-pitch-row .numdrag { min-width: 40px; text-align: center; }
+.audio-pitch-fine { display: flex; align-items: center; gap: 5px; font-size: 10px; color: var(--dim); }
+.step-btn { padding: 2px 5px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg2); color: var(--text); font-size: 11px; min-width: 20px; }
+.step-btn:hover { border-color: var(--accent); color: var(--accent); }
 .slot-audio-ic { display: inline-flex; color: var(--accent2); margin-right: 3px; flex-shrink: 0; }
 body.drag-audio::after {
   content: 'Drop audio to import'; position: fixed; inset: 0; z-index: 500;

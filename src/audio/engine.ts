@@ -16,6 +16,7 @@ import {
 import { makeInstrument, makeEffect, Inst, Fx } from './devices'
 import { instSchema, fxSchema, lfoShapeValue, LFO_DIV_TICKS, mixSpec, midiFxSchema, valueFromSpec } from './schema'
 import { getSampleBuffer, onSampleReady } from './samples'
+import { clipAudioBuffer, configureAudioPlayer, audioFieldsFromMap, audioRate } from './audioclip'
 import { applyMidiFx as applyMidiFxData } from './midifx'
 import { getAudioPrefs } from './prefs'
 import { setUI, toast, ui } from '../state/store'
@@ -321,10 +322,17 @@ class Engine {
     this.buildReturns()
     returns.observeDeep(this.onReturnsDeep)
     onSampleReady(id => {
-      // a sample finished loading/decoding → rebuild any sampler using it
+      // a sample finished loading/decoding → rebuild any sampler OR drum pad using it
       tracks.forEach(t => {
-        if (t.get('inst')?.get('type') === 'sampler' && t.get('inst')?.get('sampleId') === id) {
+        const it = t.get('inst') as Y.Map<any> | undefined
+        if (!it) return
+        if (it.get('type') === 'sampler' && it.get('sampleId') === id) {
           this.scheduleRebuildTrack(t.get('id'))
+        } else if (it.get('type') === 'drum') {
+          const ps = it.get('padSamples') as Y.Map<string> | undefined
+          let used = false
+          ps?.forEach(v => { if (v === id) used = true })
+          if (used) this.scheduleRebuildTrack(t.get('id'))
         }
       })
     })
@@ -566,7 +574,16 @@ class Engine {
     const tid = t.get('id') as string
     const it = t.get('inst') as Y.Map<any>
     const buf = it.get('type') === 'sampler' ? getSampleBuffer(it.get('sampleId') || '') : undefined
-    const inst = makeInstrument(it.get('type'), (it.get('params') as Y.Map<number>).toJSON(), buf)
+    // drum: resolve any per-pad sample overrides to buffers (missing ones stay synth)
+    let padBuffers: Map<number, AudioBuffer> | undefined
+    if (it.get('type') === 'drum') {
+      const ps = it.get('padSamples') as Y.Map<string> | undefined
+      if (ps && ps.size) {
+        padBuffers = new Map()
+        ps.forEach((sid, k) => { const b = getSampleBuffer(sid); if (b) padBuffers!.set(+k, b) })
+      }
+    }
+    const inst = makeInstrument(it.get('type'), (it.get('params') as Y.Map<number>).toJSON(), buf, padBuffers)
     const fx: BuiltFx[] = []
     ;(t.get('fx') as Y.Array<Y.Map<any>>).forEach(f => {
       if (f.get('on')) fx.push({
@@ -1066,14 +1083,14 @@ class Engine {
 
   // ---------------- audio-clip playback ----------------
   private makePlayer(rec: BuiltTrack, clipMap: Y.Map<any>): Tone.Player {
-    const buf = getSampleBuffer(clipMap.get('sampleId') || '')
+    const sid = clipMap.get('sampleId') || ''
+    const raw = getSampleBuffer(sid)
+    const c = audioFieldsFromMap(clipMap)
+    // crop + loop crossfade are baked into the played buffer; pitch/cents/reverse/
+    // fades/gain are set live — same path the offline export uses.
+    const buf = raw ? clipAudioBuffer(sid, raw, c.offset, c.dur, !!c.loop, c.xfade) : undefined
     const player = new Tone.Player(buf as any)
-    player.loop = !!clipMap.get('loop')
-    player.playbackRate = Math.pow(2, (clipMap.get('pitch') ?? 0) / 12)
-    player.reverse = !!clipMap.get('rev')
-    try { player.fadeIn = Math.max(0, Tone.Ticks(clipMap.get('fadeIn') ?? 0).toSeconds()) } catch { /* ok */ }
-    try { player.fadeOut = Math.max(0, Tone.Ticks(clipMap.get('fadeOut') ?? 0).toSeconds()) } catch { /* ok */ }
-    player.volume.value = clipMap.get('gainDb') ?? 0
+    configureAudioPlayer(player, c)
     player.connect(rec.inst.out)
     return player
   }
@@ -1084,7 +1101,7 @@ class Engine {
       const p = rec.player
       try {
         p.volume.rampTo(clipMap.get('gainDb') ?? 0, 0.03)
-        p.playbackRate = Math.pow(2, (clipMap.get('pitch') ?? 0) / 12)
+        p.playbackRate = audioRate(clipMap.get('pitch') ?? 0, clipMap.get('cents') ?? 0)
         p.loop = !!clipMap.get('loop')
       } catch { /* ok */ }
     }

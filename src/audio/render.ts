@@ -16,6 +16,7 @@ import { makeInstrument, makeEffect, Inst, Fx } from './devices'
 import { instSchema, fxSchema, mixSpec, lfoShapeValue, LFO_DIV_TICKS, valueFromSpec } from './schema'
 import { applyMidiFx } from './midifx'
 import { getSampleBuffer } from './samples'
+import { clipAudioBuffer, configureAudioPlayer } from './audioclip'
 import { resample, encodeAudio, download, extFor, AudioFormat, Channels, OUT_SR } from './encode'
 import { toast } from '../state/store'
 
@@ -65,8 +66,8 @@ type OffTrack = {
 // Tone.PluckSynth (Karplus-Strong) throws AbortError inside an OfflineAudioContext,
 // which kills the whole render. Substitute an offline-safe plucky synth so the
 // bounce still completes; Record Output captures the real PluckSynth live.
-function makeOffInstrument(type: string, params: Record<string, number>, buf?: AudioBuffer): Inst {
-  if (type !== 'pluck') return makeInstrument(type, params, buf)
+function makeOffInstrument(type: string, params: Record<string, number>, buf?: AudioBuffer, padBuffers?: Map<number, AudioBuffer>): Inst {
+  if (type !== 'pluck') return makeInstrument(type, params, buf, padBuffers)
   const out = new Tone.Gain(0.9)
   const synth = new Tone.PolySynth(Tone.Synth).connect(out)
   synth.set({ oscillator: { type: 'triangle' }, envelope: { attack: 0.002, decay: 0.45, sustain: 0, release: 0.4 } })
@@ -129,7 +130,12 @@ function envValueAt(pts: { t: number; v: number }[], pos: number, loop: number):
 /** Build one track's full signal chain into the current (offline) context. */
 function buildOffTrack(t: TrackJSON, master: Tone.Volume, returnInputs: Tone.ToneAudioNode[], toMaster: boolean): OffTrack {
   const buf = t.inst.type === 'sampler' ? getSampleBuffer(t.inst.sampleId || '') : undefined
-  const inst = makeOffInstrument(t.inst.type, t.inst.params, buf)
+  let padBuffers: Map<number, AudioBuffer> | undefined
+  if (t.inst.type === 'drum' && t.inst.padSamples) {
+    padBuffers = new Map()
+    for (const [k, sid] of Object.entries(t.inst.padSamples)) { const b = getSampleBuffer(sid); if (b) padBuffers.set(+k, b) }
+  }
+  const inst = makeOffInstrument(t.inst.type, t.inst.params, buf, padBuffers)
   const fx: OffFx[] = []
   t.fx.forEach(f => {
     if (!f.on) return
@@ -285,15 +291,12 @@ async function renderBuffer(
 
       const scheduleClip = (clip: ClipJSON, startTicks: number, lenTicks: number, loop: boolean) => {
         if (clip.audio) {
-          const sbuf = getSampleBuffer(clip.audio.sampleId || '')
-          if (!sbuf) return
-          const player = new Tone.Player(sbuf as any)
-          player.loop = !!clip.audio.loop
-          player.playbackRate = Math.pow(2, (clip.audio.pitch ?? 0) / 12)
-          player.reverse = !!clip.audio.rev
-          try { player.fadeIn = Math.max(0, Tone.Ticks(clip.audio.fadeIn ?? 0).toSeconds()) } catch { /* ok */ }
-          try { player.fadeOut = Math.max(0, Tone.Ticks(clip.audio.fadeOut ?? 0).toSeconds()) } catch { /* ok */ }
-          player.volume.value = clip.audio.gainDb ?? 0
+          const a = clip.audio
+          const raw = getSampleBuffer(a.sampleId || '')
+          if (!raw) return
+          // identical crop + crossfade + pitch/cents/reverse/fades as live playback
+          const player = new Tone.Player(clipAudioBuffer(a.sampleId || '', raw, a.offset, a.dur, !!a.loop, a.xfade) as any)
+          configureAudioPlayer(player, a)
           Tone.connect(player, ot.inst.out)
           player.sync().start(`${startTicks}i`)
           if (!loop) player.stop(`${startTicks + lenTicks}i`)

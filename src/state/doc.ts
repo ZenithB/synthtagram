@@ -48,6 +48,7 @@ export const clipKey = (trackId: string, sceneId: string) => `${trackId}|${scene
 export type AudioClipData = {
   sampleId: string; sampleName: string
   gainDb: number; pitch: number; rev: number; loop: number; fadeIn: number; fadeOut: number
+  offset?: number; dur?: number; cents?: number; xfade?: number
 }
 export type ClipJSON = {
   name: string; color: number; len: number; notes: Record<string, Note>
@@ -62,7 +63,7 @@ export type MidiFxJSON = { id?: string; type: string; on: boolean; params: Recor
 export type ReturnJSON = { id?: string; name: string; fxType: string; params: Record<string, number>; gain: number }
 export type TrackJSON = {
   id?: string; name: string; color: number; kind: TrackKind
-  inst: { type: string; params: Record<string, number>; sampleId?: string; sampleName?: string; out?: number }
+  inst: { type: string; params: Record<string, number>; sampleId?: string; sampleName?: string; out?: number; padSamples?: Record<string, string>; padNames?: Record<string, string> }
   fx: FxJSON[]
   gain: number; pan: number; mute: boolean; solo: boolean
   sendA?: number; sendB?: number
@@ -115,6 +116,7 @@ export function clipToJSON(m: Y.Map<any>): ClipJSON {
       sampleId: m.get('sampleId') ?? '', sampleName: m.get('sampleName') ?? 'Audio',
       gainDb: m.get('gainDb') ?? 0, pitch: m.get('pitch') ?? 0, rev: m.get('rev') ?? 0,
       loop: m.get('loop') ?? 1, fadeIn: m.get('fadeIn') ?? 0, fadeOut: m.get('fadeOut') ?? 0,
+      offset: m.get('offset') ?? 0, dur: m.get('dur') ?? 0, cents: m.get('cents') ?? 0, xfade: m.get('xfade') ?? 0,
     }
   }
   const env = m.get('env') as Y.Map<any> | undefined
@@ -181,6 +183,14 @@ function yTrack(t: TrackJSON) {
   inst.set('params', pm)
   inst.set('out', t.inst.out ?? 0)
   if (t.inst.sampleId) { inst.set('sampleId', t.inst.sampleId); inst.set('sampleName', t.inst.sampleName ?? '') }
+  if (t.inst.padSamples && Object.keys(t.inst.padSamples).length) {
+    const psm = new Y.Map<string>()
+    for (const [k, v] of Object.entries(t.inst.padSamples)) psm.set(k, v)
+    inst.set('padSamples', psm)
+    const pnm = new Y.Map<string>()
+    for (const [k, v] of Object.entries(t.inst.padNames ?? {})) pnm.set(k, v)
+    inst.set('padNames', pnm)
+  }
   m.set('inst', inst)
   const fxArr = new Y.Array<Y.Map<any>>()
   fxArr.push(t.fx.map(yFx))
@@ -286,9 +296,17 @@ export function removeTrack(trackId: string) {
 export function duplicateTrack(trackId: string): string | null {
   const t = trackById(trackId)
   if (!t) return null
+  const di = t.get('inst') as Y.Map<any>
+  const dps = di.get('padSamples') as Y.Map<string> | undefined
+  const dpn = di.get('padNames') as Y.Map<string> | undefined
   const json: TrackJSON = {
     name: t.get('name') + ' copy', color: t.get('color'), kind: t.get('kind'),
-    inst: { type: t.get('inst').get('type'), params: Object.fromEntries((t.get('inst').get('params') as Y.Map<number>).entries()) },
+    inst: {
+      type: di.get('type'), params: Object.fromEntries((di.get('params') as Y.Map<number>).entries()),
+      out: di.get('out') ?? 0,
+      ...(di.get('sampleId') ? { sampleId: di.get('sampleId'), sampleName: di.get('sampleName') ?? '' } : {}),
+      ...(dps && dps.size ? { padSamples: Object.fromEntries(dps.entries()), padNames: dpn ? Object.fromEntries(dpn.entries()) : {} } : {}),
+    },
     fx: (t.get('fx') as Y.Array<Y.Map<any>>).toArray().map(f => ({
       type: f.get('type'), on: f.get('on'),
       params: Object.fromEntries((f.get('params') as Y.Map<number>).entries()),
@@ -785,6 +803,26 @@ export function setSamplerSample(trackId: string, sampleId: string, name: string
   })
 }
 
+/** Map an audio sample onto one drum pad (sampleId=null clears it back to synth). */
+export function setDrumPadSample(trackId: string, pad: number, sampleId: string | null, name = '') {
+  mutate(sampleId ? 'Sample drum pad' : 'Clear drum pad sample', () => {
+    const t = trackById(trackId); if (!t) return
+    const inst = t.get('inst') as Y.Map<any>
+    const key = String(pad)
+    if (sampleId) {
+      let ps = inst.get('padSamples') as Y.Map<string> | undefined
+      let pn = inst.get('padNames') as Y.Map<string> | undefined
+      if (!ps) { ps = new Y.Map<string>(); inst.set('padSamples', ps) }
+      if (!pn) { pn = new Y.Map<string>(); inst.set('padNames', pn) }
+      ps.set(key, sampleId)
+      pn.set(key, name)
+    } else {
+      ;(inst.get('padSamples') as Y.Map<string> | undefined)?.delete(key)
+      ;(inst.get('padNames') as Y.Map<string> | undefined)?.delete(key)
+    }
+  })
+}
+
 // ---------- audio tracks & clips ----------
 export function addAudioTrack(name: string, color: number): string {
   return addTrack({
@@ -807,7 +845,7 @@ export function addBusTrack(name: string, color: number): string {
 export function createAudioClip(trackId: string, sceneId: string, sampleId: string, sampleName: string, durTicks: number, color: number): ClipRef {
   const m = jsonToClipMap({
     name: sampleName, color, len: durTicks, notes: {},
-    audio: { sampleId, sampleName, gainDb: 0, pitch: 0, rev: 0, loop: 1, fadeIn: 0, fadeOut: 0 },
+    audio: { sampleId, sampleName, gainDb: 0, pitch: 0, rev: 0, loop: 1, fadeIn: 0, fadeOut: 0, offset: 0, dur: 0, cents: 0, xfade: 0 },
   })
   mutate('Add audio clip', () => clips.set(clipKey(trackId, sceneId), m))
   return { kind: 'session', trackId, sceneId }
@@ -980,6 +1018,29 @@ export function duplicateArrClip(aid: string): string | null {
   return addArrClip(m.get('trackId'), m.get('start') + m.get('len'), clipToJSON(m), 'Duplicate clip')
 }
 
+/**
+ * Cut an arrangement clip in two at `cutTicks` from its start. For audio clips
+ * the caller passes the sample crop for each half (computed from the buffer) so
+ * playback stays continuous across the cut. Returns the new right-hand clip id.
+ */
+export function splitArrClip(aid: string, cutTicks: number, audio?: { leftDur: number; rightOffset: number; rightDur: number }): string | null {
+  const m = arr.get(aid) as Y.Map<any>
+  if (!m) return null
+  const start = m.get('start') ?? 0
+  const len = m.get('len') ?? BAR
+  if (cutTicks <= 0 || cutTicks >= len) return null
+  const rid = id8()
+  mutate('Split clip', () => {
+    const json = clipToJSON(m)
+    json.len = len - cutTicks
+    if (json.audio && audio) { json.audio.offset = audio.rightOffset; json.audio.dur = audio.rightDur }
+    arr.set(rid, jsonToClipMap(json, { trackId: m.get('trackId'), start: start + cutTicks, id: rid }))
+    m.set('len', cutTicks)
+    if (json.audio && audio) m.set('dur', audio.leftDur)
+  })
+  return rid
+}
+
 export function sendClipToArr(trackId: string, sceneId: string, at: number) {
   const m = clips.get(clipKey(trackId, sceneId)) as Y.Map<any>
   if (!m) return
@@ -1036,6 +1097,12 @@ export function exportProject(): ProjectJSON {
       const inst = t.get('inst') as Y.Map<any>
       const instJson: TrackJSON['inst'] = { type: inst.get('type'), params: Object.fromEntries((inst.get('params') as Y.Map<number>).entries()), out: inst.get('out') ?? 0 }
       if (inst.get('sampleId')) { instJson.sampleId = inst.get('sampleId'); instJson.sampleName = inst.get('sampleName') ?? '' }
+      const psm = inst.get('padSamples') as Y.Map<string> | undefined
+      if (psm && psm.size) {
+        instJson.padSamples = Object.fromEntries(psm.entries())
+        const pnm = inst.get('padNames') as Y.Map<string> | undefined
+        instJson.padNames = pnm ? Object.fromEntries(pnm.entries()) : {}
+      }
       const lfos = (t.get('lfos') as Y.Array<Y.Map<any>> | undefined)?.toArray().map(l => ({
         id: l.get('id'), on: l.get('on'), shape: l.get('shape'), sync: l.get('sync'), rate: l.get('rate'),
         hz: l.get('hz'), depth: l.get('depth'), phase: l.get('phase'), dest: l.get('dest'), fxId: l.get('fxId'), pkey: l.get('pkey'),
