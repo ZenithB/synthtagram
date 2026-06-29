@@ -320,6 +320,7 @@ export function SessionView() {
   useY(clips)
   useY(meta)
   useEngineTick()
+  const masterSel = useUI(s => s.selTrackId === 'master')
 
   const all = tracks.toArray()
   const instr = all.filter(t => t.get('kind') !== 'bus')
@@ -363,10 +364,12 @@ export function SessionView() {
         <div className={`track-col scene-col ${buses.length ? '' : 'push'}`}>
           {/* Master sits at the top styled like a track header, so the scene
               launch buttons below line up row-for-row with the clip slots. */}
-          <div className="track-head master-head" data-info="Master output, analyzer & volume">
-            <div className="track-title">
+          <div className={`track-head master-head ${masterSel ? 'selected' : ''}`} data-info="Master output, analyzer & volume">
+            <div className="track-title master-title" data-info="Click to edit master-bus effects (the whole mix runs through them)"
+              onClick={() => { selectTrack('master'); setUI({ detailOpen: true, detailTab: 'devices' }) }}>
               <span className="track-icon"><Icon name="spectrum" size={12} /></span>
               <span className="track-name">Master</span>
+              <Icon name="chevR" size={11} />
             </div>
             <Analyzer />
             <div className="master-mix">

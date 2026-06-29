@@ -129,7 +129,7 @@ function envValueAt(pts: { t: number; v: number }[], pos: number, loop: number):
 
 /** Build one track's full signal chain into the current (offline) context. */
 function buildOffTrack(t: TrackJSON, master: Tone.Volume, returnInputs: Tone.ToneAudioNode[], toMaster: boolean, legacyAB = true): OffTrack {
-  const buf = t.inst.type === 'sampler' ? getSampleBuffer(t.inst.sampleId || '') : undefined
+  const buf = (t.inst.type === 'sampler' || t.inst.type === 'ksampler') ? getSampleBuffer(t.inst.sampleId || '') : undefined
   let padBuffers: Map<number, AudioBuffer> | undefined
   if (t.inst.type === 'drum' && t.inst.padSamples) {
     padBuffers = new Map()
@@ -257,10 +257,30 @@ async function renderBuffer(
     transport.swing = project.meta.swing
     transport.swingSubdivision = '16n'
 
+    // The multiband effect (mbcomp) is an AudioWorklet — register its module on
+    // THIS offline context before building tracks so it bounces like it sounds;
+    // otherwise mbcomp falls back to a clean passthrough in the render.
+    try { await (Tone.getContext().rawContext as any).audioWorklet?.addModule('/sf-mbdyn.js') } catch { /* mbcomp bypassed in this bounce */ }
+
     // stereo-preserving master (Tone.Channel would downmix)
     const master = new Tone.Volume(project.meta.masterGain ?? 0)
     const limiter = new Tone.Limiter(-1)
-    master.chain(limiter, Tone.getDestination())
+    limiter.connect(Tone.getDestination())
+    // master-bus effect chain (master → [fx…] → limiter) — applied to the FULL
+    // mix only, mirroring live playback; individual stems stay pre-master.
+    const masterOffFx: OffDevice[] = []
+    let mtail: Tone.ToneAudioNode = master
+    if (target.kind === 'mix') {
+      ;(project.masterFx ?? []).forEach(f => {
+        if (!f.on) return
+        const dev = makeOffDevice(f.type, f.params)
+        const out = new Tone.Volume(f.out ?? 0)
+        Tone.connect(mtail, dev.in); Tone.connect(dev.out, out)
+        masterOffFx.push(dev)
+        mtail = out
+      })
+    }
+    Tone.connect(mtail, limiter)
 
     // return buses (none for a dry track/bus stem; all for the mix; one for a return stem)
     const returns: { input: Tone.ToneAudioNode }[] = []
@@ -385,6 +405,7 @@ async function renderBuffer(
     transport.scheduleRepeat(time => {
       const posTicks = transport.getTicksAtTime(time)
       for (const ot of offTracks) applyMod(ot, posTicks, time, bpm, withAutomation)
+      masterOffFx.forEach(d => d.tick?.(posTicks, true, bpm))
     }, '32n', 0)
 
     transport.start(0.02, `${fromTicks}i`)

@@ -54,6 +54,10 @@ export type Fx = {
   // Effects that need to analyse their *input* (e.g. Auto-Tune pitch detection)
   // expose a raw AnalyserNode; the engine taps the pre-effect signal into it.
   detect?: AnalyserNode
+  // Live gain reduction in dB (≤0) for a GR meter — single value (comp/opto) or
+  // per-band (multiband). Read each frame by the UI; absent on non-dynamics fx.
+  gr?: () => number
+  grBands?: () => number[]
   dispose: () => void
 }
 
@@ -377,6 +381,40 @@ function makeSampler(p: Record<string, number>, buffer?: AudioBuffer): Inst {
   }
 }
 
+// Musical single-sample keyboard instrument: ONE buffer played chromatically,
+// pitched up/down across the keyboard (Tone.Sampler handles polyphony + velocity
+// + sample-accurate repitch). `root` (0..11 = C..B) is the note the sample sounds
+// at unpitched, folded into the pitch math so it changes live with no rebuild.
+function makeKSampler(p: Record<string, number>, buffer?: AudioBuffer): Inst {
+  const out = new Tone.Gain(0.9)
+  let tune = p.tune ?? 0
+  let root = (p.root ?? 0) | 0
+  if (!buffer) {
+    return { out, set: () => {}, noteOn: () => {}, noteOff: () => {}, trigger: () => {}, dispose: () => out.dispose() }
+  }
+  const sampler = new Tone.Sampler({
+    urls: { C3: new Tone.ToneAudioBuffer(buffer) },   // sample rooted at C3 (midi 48)
+    attack: p.attack ?? 0.004,
+    release: p.release ?? 0.4,
+  }).connect(out)
+  // Feed the C3-keyed sampler `note - root`, so playing the chosen root pitch
+  // class (in octave 3) plays the sample at its natural pitch.
+  const hz = (pp: number) => Tone.Frequency(pp - root + tune, 'midi').toFrequency()
+  return {
+    out,
+    set: (k, v) => {
+      if (k === 'tune') tune = v
+      else if (k === 'root') root = v | 0
+      else if (k === 'attack') sampler.attack = v
+      else if (k === 'release') sampler.release = v
+    },
+    noteOn: (pp, vel) => sampler.triggerAttack(hz(pp), liveTime(), vel),
+    noteOff: pp => sampler.triggerRelease(hz(pp), liveTime()),
+    trigger: (pp, dur, time, vel) => sampler.triggerAttackRelease(hz(pp), dur, time, vel),
+    dispose: () => { sampler.dispose(); out.dispose() },
+  }
+}
+
 /** Audio tracks have no synth — just a stereo passthrough bus that audio-clip
  *  players connect into, so the signal runs through the track's fx + mixer. */
 function makeAudioBus(): Inst {
@@ -392,6 +430,7 @@ export function makeInstrument(type: string, params: Record<string, number>, buf
     case 'keys': return makeKeys(params)
     case 'duo': return makeDuo(params)
     case 'sampler': return makeSampler(params, buffer)
+    case 'ksampler': return makeKSampler(params, buffer)
     case 'audiobus': return makeAudioBus()
     case 'drum': return makeDrum(params, padBuffers)
     default: return makePoly(params)
@@ -404,6 +443,39 @@ function delaySeconds(idx: number) {
   const bpm = Tone.getTransport().bpm.value
   const whole = (60 / bpm) * 4
   return whole * DELAY_FRACTIONS[Math.max(0, Math.min(DELAY_FRACTIONS.length - 1, idx | 0))]
+}
+
+// LA-2A-style optical compressor. The opto "cell" gives soft-knee, gentle,
+// program-dependent levelling — modelled here on the native DynamicsCompressor
+// with a wide knee, low ratio and slow release (Comp), or a tighter/harder
+// curve (Limit). Composite (compressor → makeup gain) so it wires as one
+// in=out effect node; exposes live gain reduction for the GR meter.
+class OptoComp extends Tone.ToneAudioNode {
+  readonly name = 'OptoComp'
+  readonly input: Tone.Compressor
+  readonly output: Tone.Gain
+  private mode = 0
+  constructor() {
+    super()
+    this.input = new Tone.Compressor({ ratio: 3, knee: 30, attack: 0.01, release: 0.45, threshold: -16 })
+    this.output = new Tone.Gain(1)
+    this.input.connect(this.output)
+  }
+  get reduction(): number { return (this.input as any).reduction ?? 0 }
+  private applyMode() {
+    this.input.ratio.value = this.mode ? 10 : 3
+    this.input.knee.value = this.mode ? 12 : 30
+    this.input.attack.value = this.mode ? 0.005 : 0.01
+    this.input.release.value = this.mode ? 0.3 : 0.45
+  }
+  // Peak Reduction (0..1) lowers the threshold (0 → -40 dB), like the hardware.
+  setReduction(v: number) { this.input.threshold.value = -40 * Math.max(0, Math.min(1, v)) }
+  setGain(db: number) { this.output.gain.value = Tone.dbToGain(db) }
+  setMode(m: number) { this.mode = m | 0; this.applyMode() }
+  configure(mode: number, reduction: number, gainDb: number) {
+    this.mode = mode | 0; this.applyMode(); this.setReduction(reduction); this.setGain(gainDb)
+  }
+  dispose() { super.dispose(); this.input.dispose(); this.output.dispose(); return this }
 }
 
 export function makeEffect(type: string, p: Record<string, number>): Fx {
@@ -503,7 +575,48 @@ export function makeEffect(type: string, p: Record<string, number>): Fx {
           else if (k === 'attack') node.attack.value = v
           else node.release.value = v
         },
+        gr: () => (node as any).reduction ?? 0,   // DynamicsCompressor live GR (dB, ≤0)
         dispose: () => node.dispose(),
+      }
+    }
+    case 'opto': {
+      const opto = new OptoComp()
+      opto.configure((p.mode ?? 0) | 0, p.reduction ?? 0.4, p.gain ?? 0)
+      return {
+        node: opto,
+        set: (k, v) => {
+          if (k === 'reduction') opto.setReduction(v)
+          else if (k === 'gain') opto.setGain(v)
+          else if (k === 'mode') opto.setMode(v | 0)
+        },
+        gr: () => opto.reduction,
+        dispose: () => opto.dispose(),
+      }
+    }
+    case 'mbcomp': {
+      // Single AudioWorklet node (sf-mbdyn): 3-band crossover + per-band comp or
+      // expander + sum. Module is preloaded at engine start; if it isn't ready
+      // yet (or in a context without it), degrade to a clean passthrough.
+      const ctx = Tone.getContext().rawContext as AudioContext
+      let grLast = [0, 0, 0]
+      try {
+        const node = new AudioWorkletNode(ctx, 'sf-mbdyn', {
+          numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2],
+          channelCount: 2, channelCountMode: 'explicit', channelInterpretation: 'speakers',
+        })
+        node.port.postMessage({ init: p })
+        node.port.onmessage = e => { if (e.data?.gr) grLast = e.data.gr as number[] }
+        return {
+          // a raw AudioWorkletNode IS an AudioNode; Tone.connect handles it at
+          // runtime (it only follows .input/.output on real ToneAudioNodes).
+          node: node as unknown as Tone.ToneAudioNode,
+          set: (k, v) => node.port.postMessage({ k, v }),
+          grBands: () => grLast.map(g => -g),   // worklet posts positive dB of reduction
+          dispose: () => { try { node.port.onmessage = null; node.disconnect() } catch { /* ok */ } },
+        }
+      } catch {
+        const node = new Tone.Gain(1)
+        return { node, set: () => {}, grBands: () => [0, 0, 0], dispose: () => node.dispose() }
       }
     }
     case 'phaser': {

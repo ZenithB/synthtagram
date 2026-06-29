@@ -173,6 +173,18 @@ const ICONS: Record<string, React.ReactNode> = {
     <rect x="10" y="1.6" width="3.6" height="3.6" {...F} opacity="0.45" />
   </>,
   comp: <path d="M3 4 L7 8 L3 12 M13 4 L9 8 L13 12" />,
+  opto: <>
+    <circle cx="8" cy="8" r="3" {...F} />
+    <circle cx="8" cy="8" r="5.6" />
+    <line x1="8" y1="1" x2="8" y2="2.4" /><line x1="8" y1="13.6" x2="8" y2="15" />
+    <line x1="1" y1="8" x2="2.4" y2="8" /><line x1="13.6" y1="8" x2="15" y2="8" />
+  </>,
+  mbcomp: <>
+    <line x1="2.5" y1="11" x2="2.5" y2="5" /><line x1="5" y1="11" x2="5" y2="3" />
+    <line x1="7.5" y1="11" x2="7.5" y2="6" /><line x1="10" y1="11" x2="10" y2="4" />
+    <line x1="12.5" y1="11" x2="12.5" y2="7" />
+    <line x1="1" y1="13" x2="15" y2="13" />
+  </>,
   phaser: <>
     <circle cx="8" cy="8" r="5.6" />
     <path d="M3.6 8 C5 5.6, 6.6 5.6, 8 8 S11 10.4, 12.4 8" />

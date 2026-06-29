@@ -54,6 +54,8 @@ const adsr = (a: number, d: number, s: number, r: number): ParamSpec[] => [
 export const WAVES = ['sawtooth', 'square', 'triangle', 'sine', 'fatsawtooth', 'fatsquare', 'fattriangle']
 const WAVE_LABELS = ['Saw', 'Sqr', 'Tri', 'Sin', 'FatSaw', 'FatSqr', 'FatTri']
 
+export const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+
 export const DELAY_DIVS = ['1/32', '1/16', '1/8', '3/16', '1/4', '1/2']
 export const DELAY_FRACTIONS = [1 / 32, 1 / 16, 1 / 8, 3 / 16, 1 / 4, 1 / 2] // of a whole note
 
@@ -139,6 +141,17 @@ export const INSTRUMENTS: InstrumentSchema[] = [
       { key: 'release', label: 'Release', min: 0.01, max: 3, def: 0.4, exp: true, fmt: fmtSec },
     ],
   },
+  {
+    // Musical, keyboard-based single-sample instrument (one sound pitched across
+    // the keyboard). `root` is the note the loaded sample sounds at unpitched.
+    type: 'ksampler', label: 'Key Sampler', icon: 'sampler',
+    params: [
+      { key: 'root', label: 'Root', min: 0, max: 11, def: 0, int: true, steps: NOTE_NAMES },
+      { key: 'tune', label: 'Fine', min: -24, max: 24, def: 0, fmt: fmtSemi },
+      { key: 'attack', label: 'Attack', min: 0.001, max: 2, def: 0.004, exp: true, fmt: fmtSec },
+      { key: 'release', label: 'Release', min: 0.01, max: 4, def: 0.4, exp: true, fmt: fmtSec },
+    ],
+  },
   { type: 'drum', label: 'Drum Kit', icon: 'drum', params: drumParams() },
   { type: 'audiobus', label: 'Audio', icon: 'sampler', params: [] },
 ]
@@ -207,6 +220,40 @@ export const EFFECTS: EffectSchema[] = [
       { key: 'ratio', label: 'Ratio', min: 1, max: 20, def: 4, fmt: v => `${v.toFixed(0)}:1` },
       { key: 'attack', label: 'Attack', min: 0.001, max: 0.3, def: 0.01, exp: true, fmt: fmtSec },
       { key: 'release', label: 'Release', min: 0.02, max: 1, def: 0.2, exp: true, fmt: fmtSec },
+    ],
+  },
+  {
+    // LA-2A-style optical compressor: soft-knee, gentle program-dependent
+    // levelling. Just Peak Reduction + makeup Gain + a Comp/Limit switch, like
+    // the hardware (ratio/attack/release are fixed by the "opto cell" model).
+    type: 'opto', label: 'Opto Comp', icon: 'opto',
+    params: [
+      { key: 'reduction', label: 'Peak Redux', min: 0, max: 1, def: 0.4, fmt: fmtPct },
+      { key: 'gain', label: 'Gain', min: -12, max: 24, def: 0, fmt: fmtDb },
+      { key: 'mode', label: 'Mode', min: 0, max: 1, def: 0, int: true, steps: ['Comp', 'Limit'] },
+    ],
+  },
+  {
+    // 3-band multiband dynamics with a Comp ⇄ Expand switch. Custom graphical UI
+    // (per-band threshold/ratio handles + GR meters) in DeviceRack; the engine
+    // runs it as a single AudioWorklet node (sf-mbdyn). Band params are flat keys
+    // (b{i}_*) like the drum kit, so presets/automation/macros all just work.
+    type: 'mbcomp', label: 'Multiband', icon: 'mbcomp',
+    params: [
+      { key: 'mode', label: 'Mode', min: 0, max: 1, def: 0, int: true, steps: ['Comp', 'Expand'] },
+      { key: 'xlo', label: 'Lo×', min: 60, max: 1000, def: 250, exp: true, fmt: fmtHz },
+      { key: 'xhi', label: 'Hi×', min: 1000, max: 12000, def: 2500, exp: true, fmt: fmtHz },
+      { key: 'attack', label: 'Attack', min: 0.001, max: 0.3, def: 0.02, exp: true, fmt: fmtSec },
+      { key: 'release', label: 'Release', min: 0.02, max: 1, def: 0.18, exp: true, fmt: fmtSec },
+      { key: 'b0_thresh', label: 'Lo Thr', min: -60, max: 0, def: -24, fmt: fmtDb },
+      { key: 'b0_ratio', label: 'Lo Ratio', min: 1, max: 20, def: 2, fmt: v => `${v.toFixed(1)}:1` },
+      { key: 'b0_gain', label: 'Lo Gain', min: -24, max: 24, def: 0, fmt: fmtDb },
+      { key: 'b1_thresh', label: 'Mid Thr', min: -60, max: 0, def: -24, fmt: fmtDb },
+      { key: 'b1_ratio', label: 'Mid Ratio', min: 1, max: 20, def: 2, fmt: v => `${v.toFixed(1)}:1` },
+      { key: 'b1_gain', label: 'Mid Gain', min: -24, max: 24, def: 0, fmt: fmtDb },
+      { key: 'b2_thresh', label: 'Hi Thr', min: -60, max: 0, def: -24, fmt: fmtDb },
+      { key: 'b2_ratio', label: 'Hi Ratio', min: 1, max: 20, def: 2, fmt: v => `${v.toFixed(1)}:1` },
+      { key: 'b2_gain', label: 'Hi Gain', min: -24, max: 24, def: 0, fmt: fmtDb },
     ],
   },
   {

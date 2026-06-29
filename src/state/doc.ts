@@ -24,6 +24,9 @@ export const scenes = doc.getArray<Y.Map<any>>('scenes')
 export const clips = doc.getMap<Y.Map<any>>('clips') // key: `${trackId}|${sceneId}`
 export const arr = doc.getMap<Y.Map<any>>('arr')     // key: arrangement clip id
 export const chat = doc.getArray<any>('chat')
+// Master-bus effect chain — the whole mix passes through these before the
+// limiter, live and in exports. Same fx-map shape as a track's `fx`.
+export const masterFx = doc.getArray<Y.Map<any>>('masterFx')
 
 export const idb = new IndexeddbPersistence(docName, doc)
 
@@ -83,6 +86,7 @@ export type ProjectJSON = {
   clips: Record<string, ClipJSON>
   arr: Record<string, ClipJSON & { trackId: string; start: number }>
   returns?: ReturnJSON[]
+  masterFx?: FxJSON[]
 }
 
 // The two built-in send buses every session starts with — undeletable, full fx
@@ -377,35 +381,37 @@ export function setInstParam(trackId: string, key: string, val: number) {
   })
 }
 
-export function addFx(trackId: string, type: string, params: Record<string, number>) {
-  mutate(`Add ${type}`, () => {
-    const t = trackById(trackId)
-    if (!t) return
-    ;(t.get('fx') as Y.Array<Y.Map<any>>).push([yFx({ type, on: true, params })])
-  })
+// Effect-chain mutators work on either a track id OR the special 'master' bus,
+// so the master fader reuses the entire effect UI + engine path.
+function fxArrayFor(target: string): Y.Array<Y.Map<any>> | undefined {
+  if (target === 'master') return masterFx
+  return trackById(target)?.get('fx') as Y.Array<Y.Map<any>> | undefined
 }
-
-function fxIndex(t: Y.Map<any>, fxId: string) {
-  const fx = t.get('fx') as Y.Array<Y.Map<any>>
+function fxIndexIn(fx: Y.Array<Y.Map<any>>, fxId: string) {
   for (let i = 0; i < fx.length; i++) if (fx.get(i).get('id') === fxId) return i
   return -1
 }
 
+export function addFx(trackId: string, type: string, params: Record<string, number>) {
+  mutate(`Add ${type}`, () => {
+    fxArrayFor(trackId)?.push([yFx({ type, on: true, params })])
+  })
+}
+
 export function removeFx(trackId: string, fxId: string) {
   mutate('Remove effect', () => {
-    const t = trackById(trackId)
-    if (!t) return
-    const i = fxIndex(t, fxId)
-    if (i >= 0) (t.get('fx') as Y.Array<Y.Map<any>>).delete(i)
+    const fx = fxArrayFor(trackId)
+    if (!fx) return
+    const i = fxIndexIn(fx, fxId)
+    if (i >= 0) fx.delete(i)
   })
 }
 
 export function moveFx(trackId: string, fxId: string, dir: -1 | 1) {
   mutate('Reorder effects', () => {
-    const t = trackById(trackId)
-    if (!t) return
-    const fx = t.get('fx') as Y.Array<Y.Map<any>>
-    const i = fxIndex(t, fxId)
+    const fx = fxArrayFor(trackId)
+    if (!fx) return
+    const i = fxIndexIn(fx, fxId)
     const j = i + dir
     if (i < 0 || j < 0 || j >= fx.length) return
     const f = fx.get(i)
@@ -417,19 +423,19 @@ export function moveFx(trackId: string, fxId: string, dir: -1 | 1) {
 
 export function setFxParam(trackId: string, fxId: string, key: string, val: number) {
   mutate('Tweak effect', () => {
-    const t = trackById(trackId)
-    if (!t) return
-    const i = fxIndex(t, fxId)
-    if (i >= 0) ((t.get('fx') as Y.Array<Y.Map<any>>).get(i).get('params') as Y.Map<number>).set(key, val)
+    const fx = fxArrayFor(trackId)
+    if (!fx) return
+    const i = fxIndexIn(fx, fxId)
+    if (i >= 0) (fx.get(i).get('params') as Y.Map<number>).set(key, val)
   })
 }
 
 export function setFxOn(trackId: string, fxId: string, on: boolean) {
   mutate(on ? 'Enable effect' : 'Bypass effect', () => {
-    const t = trackById(trackId)
-    if (!t) return
-    const i = fxIndex(t, fxId)
-    if (i >= 0) (t.get('fx') as Y.Array<Y.Map<any>>).get(i).set('on', on)
+    const fx = fxArrayFor(trackId)
+    if (!fx) return
+    const i = fxIndexIn(fx, fxId)
+    if (i >= 0) fx.get(i).set('on', on)
   })
 }
 
@@ -443,10 +449,10 @@ export function setInstOut(trackId: string, db: number) {
 
 export function setFxOut(trackId: string, fxId: string, db: number) {
   mutate('Device output', () => {
-    const t = trackById(trackId)
-    if (!t) return
-    const i = fxIndex(t, fxId)
-    if (i >= 0) (t.get('fx') as Y.Array<Y.Map<any>>).get(i).set('out', db)
+    const fx = fxArrayFor(trackId)
+    if (!fx) return
+    const i = fxIndexIn(fx, fxId)
+    if (i >= 0) fx.get(i).set('out', db)
   })
 }
 
@@ -624,8 +630,9 @@ export function setMacroValue(trackId: string, idx: number, value: number, range
       if (dest === 'inst') (t.get('inst').get('params') as Y.Map<number>).set(pkey, v)
       else if (dest === 'mix') t.set(pkey, v)
       else {
-        const i = fxIndex(t, fxId)
-        if (i >= 0) ((t.get('fx') as Y.Array<Y.Map<any>>).get(i).get('params') as Y.Map<number>).set(pkey, v)
+        const fx = t.get('fx') as Y.Array<Y.Map<any>>
+        const i = fxIndexIn(fx, fxId)
+        if (i >= 0) (fx.get(i).get('params') as Y.Map<number>).set(pkey, v)
       }
     })
   })
@@ -1147,6 +1154,10 @@ export function exportProject(): ProjectJSON {
       id: r.get('id'), name: r.get('name'), fxType: r.get('fxType'),
       params: Object.fromEntries((r.get('params') as Y.Map<number>).entries()), gain: r.get('gain') ?? 0,
     })),
+    masterFx: masterFx.toArray().map(f => ({
+      id: f.get('id'), type: f.get('type'), on: f.get('on'), out: f.get('out') ?? 0,
+      params: Object.fromEntries((f.get('params') as Y.Map<number>).entries()),
+    })),
   }
 }
 
@@ -1162,9 +1173,12 @@ export function loadProject(json: ProjectJSON, label = 'Load project') {
     arr.forEach((_v, k) => ak.push(k))
     ak.forEach(k => arr.delete(k))
     if (returns.length) returns.delete(0, returns.length)
+    if (masterFx.length) masterFx.delete(0, masterFx.length)
     // meta
     for (const [k, v] of Object.entries(json.meta)) meta.set(k, v)
     meta.set('inited', true)
+    // master-bus effect chain
+    if (json.masterFx?.length) masterFx.push(json.masterFx.map(f => yFx(f)))
     // return buses (preserve ids so send routing stays valid)
     if (json.returns?.length) {
       returns.push(json.returns.map(r => {

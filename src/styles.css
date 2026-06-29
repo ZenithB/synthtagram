@@ -280,6 +280,11 @@ button { cursor: pointer; background: none; border: none; }
 .track-col.push { margin-left: auto; }   /* leader of the right-aligned group (buses + master) */
 .master-head { cursor: default; display: flex; flex-direction: column; align-items: center; gap: 5px; border-top-color: var(--accent2); }
 .master-head .track-title { justify-content: center; margin-bottom: 0; min-height: 0; }
+.master-title { cursor: pointer; border-radius: 4px; padding: 1px 5px; transition: background 0.1s; }
+.master-title:hover { background: var(--bg2); }
+.master-title .icon { color: var(--dim); }
+.master-head.selected { box-shadow: inset 0 0 0 1px var(--accent2); }
+.master-head.selected .track-title .track-icon { color: var(--accent2); }
 .scene-cell { height: 34px; display: flex; align-items: center; gap: 5px; background: var(--bg1); border: 1px solid var(--border); border-radius: 5px; padding: 0 6px; }
 .scene-play { color: var(--ok); font-size: 12px; }
 .scene-play:hover { transform: scale(1.25); }
@@ -602,6 +607,32 @@ button { cursor: pointer; background: none; border: none; }
 .dev-meter { position: relative; flex: 1; min-width: 44px; height: 7px; background: var(--bg0); border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
 .dev-meter-fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0%; background: var(--ok); border-radius: 3px; transition: background 0.1s; }
 .device-out .knob-wrap { margin: 0; }
+
+/* ---------------- gain-reduction meter (comp / opto) ---------------- */
+.gr-meter { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
+.gr-cap { font-size: 9px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.6px; }
+.gr-track { position: relative; flex: 1; min-width: 48px; height: 7px; background: var(--bg0); border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
+.gr-fill { position: absolute; right: 0; top: 0; bottom: 0; width: 0%; background: var(--warn); border-radius: 3px; }
+.gr-val { font-size: 10px; color: var(--dim); font-variant-numeric: tabular-nums; min-width: 32px; text-align: right; }
+
+/* ---------------- multiband dynamics ---------------- */
+.mbcomp-device { min-width: 462px; }
+.mbcomp-device .device-title .icon { color: var(--accent2); }
+.mb-card { display: flex; flex-direction: column; gap: 8px; }
+.mb-graph { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; background: var(--bg0); }
+.mb-svg { display: block; width: 100%; height: auto; cursor: ns-resize; touch-action: none; }
+.mb-band { fill: var(--bg0); }
+.mb-band.alt { fill: color-mix(in srgb, var(--accent) 6%, var(--bg0)); }
+.mb-gr { fill: color-mix(in srgb, var(--warn) 40%, transparent); pointer-events: none; }
+.mb-thresh { stroke: var(--accent); stroke-width: 2; }
+.mb-xover { stroke: var(--accent2); stroke-width: 1.5; cursor: ew-resize; opacity: 0.85; }
+.mb-blabel { fill: var(--dim); font-size: 9px; text-anchor: middle; text-transform: uppercase; letter-spacing: 0.5px; pointer-events: none; }
+.mb-thlabel { fill: var(--accent); font-size: 9px; text-anchor: middle; font-variant-numeric: tabular-nums; pointer-events: none; }
+.mb-xlabel { fill: var(--accent2); font-size: 9px; text-anchor: middle; pointer-events: none; }
+.mb-controls { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.mb-bandctl { display: flex; gap: 2px; padding-left: 6px; border-left: 1px solid var(--border); }
+.mb-mode { min-width: 56px; }
+.mb-mode.expand { color: var(--on-accent); background: var(--accent2); border-color: var(--accent2); }
 
 /* ---------------- context-menu value rows ---------------- */
 .ctx-row { display: flex; align-items: center; gap: 4px; padding: 3px 8px; }

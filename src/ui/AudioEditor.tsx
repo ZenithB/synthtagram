@@ -49,7 +49,22 @@ export function AudioEditor() {
   const secToTicks = (s: number) => Math.max(0, Math.round(s * (bpm / 60) * PPQ))
 
   // ---- draw ----
+  // Cached min/max peaks per (buffer, pixel width) — computed once, not on every
+  // redraw (the Audacity peak-cache trick). Crop/fade/cursor edits reuse it; only
+  // a new sample or a resize recomputes. peaksRef survives effect re-runs.
+  const peaksRef = useRef<{ key: string; min: Float32Array; max: Float32Array } | null>(null)
   useEffect(() => {
+    const computePeaks = (data: Float32Array, W: number) => {
+      const step = Math.max(1, Math.floor(data.length / W))
+      const min = new Float32Array(W), max = new Float32Array(W)
+      for (let x = 0; x < W; x++) {
+        let lo = 1, hi = -1
+        const base = x * step
+        for (let j = 0; j < step; j++) { const v = data[base + j] || 0; if (v < lo) lo = v; if (v > hi) hi = v }
+        min[x] = lo; max[x] = hi
+      }
+      return { min, max }
+    }
     const draw = () => {
       const canvas = canvasRef.current, box = boxRef.current
       if (!canvas || !box) return
@@ -66,18 +81,20 @@ export function AudioEditor() {
       if (!b) { ctx.fillStyle = C('--dim'); ctx.font = '12px sans-serif'; ctx.fillText('loading waveform…', 10, H / 2); return }
       const dur = b.duration
       const xOf = (s: number) => (s / dur) * W
-      const data = b.getChannelData(0)
-      const step = Math.max(1, Math.floor(data.length / W))
+      // peak cache: recompute only when the buffer or the pixel width changes
+      const key = `${sampleId}:${W}:${b.length}`
+      if (!peaksRef.current || peaksRef.current.key !== key) {
+        peaksRef.current = { key, ...computePeaks(b.getChannelData(0), W) }
+      }
+      const { min: peakMin, max: peakMax } = peaksRef.current
       const mid = H / 2
       const accent = C('--accent2', '#559DA0')
       const xS = xOf(regionStart), xE = xOf(regionEnd)
       // waveform (bright inside the region, dim outside)
       for (let x = 0; x < W; x++) {
-        let min = 1, max = -1
-        for (let j = 0; j < step; j++) { const v = data[x * step + j] || 0; if (v < min) min = v; if (v > max) max = v }
         ctx.strokeStyle = accent
         ctx.globalAlpha = x >= xS && x <= xE ? 0.9 : 0.22
-        ctx.beginPath(); ctx.moveTo(x + 0.5, mid + min * mid * 0.92); ctx.lineTo(x + 0.5, mid + max * mid * 0.92); ctx.stroke()
+        ctx.beginPath(); ctx.moveTo(x + 0.5, mid + peakMin[x] * mid * 0.92); ctx.lineTo(x + 0.5, mid + peakMax[x] * mid * 0.92); ctx.stroke()
       }
       ctx.globalAlpha = 1
       // dim the cropped-out areas
@@ -112,8 +129,15 @@ export function AudioEditor() {
       }
     }
     draw()
-    const id = setInterval(draw, 500) // re-draw until the buffer decodes
-    return () => clearInterval(id)
+    // Poll ONLY until the buffer decodes (then peaks cache and stay put); a
+    // ResizeObserver handles width changes — no perpetual recompute timer.
+    let id = 0 as any
+    if (!getSampleBuffer(sampleId)) {
+      id = setInterval(() => { const ready = !!getSampleBuffer(sampleId); draw(); if (ready) { clearInterval(id); id = 0 } }, 200)
+    }
+    const ro = new ResizeObserver(() => draw())
+    if (boxRef.current) ro.observe(boxRef.current)
+    return () => { if (id) clearInterval(id); ro.disconnect() }
   }, [sampleId, offset, durRaw, fadeIn, fadeOut, regionStart, regionEnd, regionDur, cursor, rev, bpm])
 
   if (!selClip || !clipMap || !clipMap.get('audio')) {

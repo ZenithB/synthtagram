@@ -11,7 +11,7 @@ import { BAR, STEP16, Note, clamp } from '../types'
 import {
   meta, tracks, clips, arr, clipKey, notesOf, addNote, updateNotes,
   createClip, trackById, returns, ensureReturns, midifxOf, envKeys, envPoints, followOf, scenes, sceneIndex,
-  isAudioClip,
+  isAudioClip, masterFx,
 } from '../state/doc'
 import { makeInstrument, makeEffect, Inst, Fx } from './devices'
 import { instSchema, fxSchema, lfoShapeValue, LFO_DIV_TICKS, mixSpec, midiFxSchema, valueFromSpec } from './schema'
@@ -36,6 +36,7 @@ type BuiltTrack = {
   meter: Tone.Meter
   sendA: Tone.Gain
   sendB: Tone.Gain
+  muted: boolean                       // engine-tracked mute state (panner→vol cut idles the chain)
   outNode: Tone.ToneAudioNode | null   // node this track's fader currently outputs to (null for buses until wired)
   busSends: Map<string, Tone.Gain>     // per-bus send gains: busTrackId → gain (vol → gain → bus input)
   part: Tone.Part | null
@@ -89,6 +90,10 @@ class Engine {
   private masterFFT!: Tone.Analyser
   private masterWave!: Tone.Analyser
   private followTimers = new Map<string, number>()
+  // ---- master-bus effect chain (master → [fx…] → limiter) ----
+  private builtMasterFx: BuiltFx[] = []
+  private masterChainOut!: Tone.ToneAudioNode   // tail of the master fx chain (meters/limiter tap here)
+  private masterFxTimer: ReturnType<typeof setTimeout> | null = null
 
   // ---- tiny emitter so React can follow launch-state changes ----
   version = 0
@@ -218,6 +223,19 @@ class Engine {
     } catch { /* probe is best-effort; never let it break audio */ }
   }
 
+  // The multiband-dynamics effect (sf-mbdyn) is a single AudioWorklet node, so
+  // its module must be registered before any track that uses it is built. Loaded
+  // once at start; mbcomp falls back to a passthrough if this ever fails.
+  private mbWorkletReady: Promise<void> | null = null
+  private async ensureMbWorklet() {
+    try {
+      const ctx = Tone.getContext().rawContext as AudioContext
+      if (!ctx.audioWorklet) return
+      if (!this.mbWorkletReady) this.mbWorkletReady = ctx.audioWorklet.addModule('/sf-mbdyn.js')
+      await this.mbWorkletReady
+    } catch { /* best-effort; mbcomp degrades to passthrough if unavailable */ }
+  }
+
   private async doStart() {
     // Audio settings (user-tunable in the Audio Settings dialog, read here at boot):
     //  • oversample → run the graph at 88.2kHz (2x) for alias-free FM/distortion,
@@ -310,13 +328,15 @@ class Engine {
     this.masterMeter = new Tone.Meter({ smoothing: 0.85 })
     this.masterFFT = new Tone.Analyser('fft', 1024)
     this.masterWave = new Tone.Analyser('waveform', 1024)
-    this.master.chain(this.limiter, Tone.getDestination())
-    // post-limiter tap for live capture — equals the audible output
+    // The limiter → destination link (and the post-limiter capture tap) are
+    // permanent; buildMasterFx() wires master → [fx…] → limiter and taps the
+    // analysers off the chain tail, so the meters/spectrum reflect master fx.
+    this.limiter.connect(Tone.getDestination())
     this.captureTap = new Tone.Gain(1)
     this.limiter.connect(this.captureTap)
-    this.master.connect(this.masterMeter)
-    this.master.connect(this.masterFFT)
-    this.master.connect(this.masterWave)
+    this.masterChainOut = this.master
+    this.buildMasterFx()
+    masterFx.observeDeep(this.onMasterFxDeep)
 
     ensureReturns()
     this.buildReturns()
@@ -326,7 +346,8 @@ class Engine {
       tracks.forEach(t => {
         const it = t.get('inst') as Y.Map<any> | undefined
         if (!it) return
-        if (it.get('type') === 'sampler' && it.get('sampleId') === id) {
+        const ity = it.get('type')
+        if ((ity === 'sampler' || ity === 'ksampler') && it.get('sampleId') === id) {
           this.scheduleRebuildTrack(t.get('id'))
         } else if (it.get('type') === 'drum') {
           const ps = it.get('padSamples') as Y.Map<string> | undefined
@@ -351,6 +372,7 @@ class Engine {
       this.metro.triggerAttackRelease(accent ? 1760 : 1175, 0.03, time, accent ? 0.5 : 0.25)
     }, '4n')
 
+    await this.ensureMbWorklet()
     this.buildAll()
     tracks.observeDeep(this.onTracksDeep)
     clips.observe(this.onClipsShallow)
@@ -417,8 +439,12 @@ class Engine {
   }
 
   private applyModulation() {
-    const newActive = new Map<string, { tid: string; dest: string; fxId: string; pkey: string }>()
     const playing = this.transport.state === 'started'
+    // Idle the whole scan when stopped and nothing is free-running. The
+    // activeMod check lets one final frame run after the last mapping is removed,
+    // so a just-unmapped param still snaps back to its base before we go quiet.
+    if (!playing && !this.modActive && this.activeMod.size === 0) return
+    const newActive = new Map<string, { tid: string; dest: string; fxId: string; pkey: string }>()
     const syncedPos = playing ? this.transport.ticks : this.freeTicks()
     const audioTime = Tone.now()
 
@@ -512,6 +538,12 @@ class Engine {
       }
     }
 
+    // master-bus effects that need a transport-synced tick (e.g. a ducker on the mix)
+    if (this.builtMasterFx.length) {
+      const bpm = this.transport.bpm.value
+      this.builtMasterFx.forEach(bf => bf.fx.tick?.(syncedPos, playing, bpm))
+    }
+
     // params modulated last frame but not now → snap back to their base value
     for (const [k, m] of this.activeMod) {
       if (!newActive.has(k)) this.restoreParam(m)
@@ -576,7 +608,8 @@ class Engine {
   private buildTrack(t: Y.Map<any>) {
     const tid = t.get('id') as string
     const it = t.get('inst') as Y.Map<any>
-    const buf = it.get('type') === 'sampler' ? getSampleBuffer(it.get('sampleId') || '') : undefined
+    const instType = it.get('type')
+    const buf = (instType === 'sampler' || instType === 'ksampler') ? getSampleBuffer(it.get('sampleId') || '') : undefined
     // drum: resolve any per-pad sample overrides to buffers (missing ones stay synth)
     let padBuffers: Map<number, AudioBuffer> | undefined
     if (it.get('type') === 'drum') {
@@ -610,14 +643,18 @@ class Engine {
     // the output knob is genuinely PRE-meter. Instrument first, then each fx.
     const instOut = new Tone.Volume(it.get('out') ?? 0)
     const instMeter = new Tone.Meter({ smoothing: 0.8 })
+    // Per-instrument & per-effect meters only feed an AnalyserNode while THIS
+    // track's device rack is open (engine.meteredTrackId). Off-panel tracks skip
+    // the meter taps entirely — N fewer always-on analysers on the audio thread.
+    const metered = tid === this.meteredTrackId
     Tone.connect(inst.out, instOut)
-    instOut.connect(instMeter) // .connect (not Tone.connect) so the meter reads POST-gain
+    if (metered) instOut.connect(instMeter) // .connect (not Tone.connect) so the meter reads POST-gain
     let prev: any = instOut
     fx.forEach(bf => {
       Tone.connect(prev, bf.fx.node)
       if (bf.fx.detect) Tone.connect(prev, bf.fx.detect) // pre-effect tap (Auto-Tune)
       Tone.connect(bf.fx.node, bf.out)
-      bf.out.connect(bf.meter)
+      if (metered) bf.out.connect(bf.meter)
       prev = bf.out
     })
     Tone.connect(prev, panner)
@@ -634,6 +671,7 @@ class Engine {
     vol.connect(sendB)
     const rec: BuiltTrack = {
       id: tid, kind: t.get('kind'), inst, instOut, instMeter, fx, panner, vol, meter, sendA, sendB,
+      muted: false,
       outNode: isBus ? null : this.master, busSends: new Map(),
       part: null, player: null, partKey: null, partStartTicks: 0, partLoopTicks: BAR,
       queuedKey: null, queuedPart: null, unobserve: null,
@@ -692,12 +730,24 @@ class Engine {
     this.built.forEach(rec => this.wireSends(rec))
   }
 
-  /** Mute = own mute OR (some track soloed AND this one isn't). Engine-coordinated. */
+  /** Mute = own mute OR (some track soloed AND this one isn't). Engine-coordinated.
+   *  Besides muting the fader, we CUT panner→vol on muted tracks: with no path to
+   *  the destination, Web Audio stops rendering the whole upstream chain
+   *  (instrument + effects + their always-on LFOs), so a muted track costs ~no
+   *  audio-thread CPU. Sends/bus/meter wiring on the fader is left intact — the
+   *  fader just receives silence — so routing logic (rewireBuses) is unaffected. */
   private applyMuteSolo() {
     const soloAny = tracks.toArray().some(t => t.get('solo'))
     for (const t of tracks.toArray()) {
       const rec = this.built.get(t.get('id'))
-      if (rec) rec.vol.mute = !!t.get('mute') || (soloAny && !t.get('solo'))
+      if (!rec) continue
+      const muted = !!t.get('mute') || (soloAny && !t.get('solo'))
+      rec.vol.mute = muted
+      if (muted !== rec.muted) {
+        rec.muted = muted
+        if (muted) { try { rec.panner.disconnect() } catch { /* ok */ } }
+        else { try { Tone.connect(rec.panner, rec.vol) } catch { /* ok */ } }
+      }
     }
   }
 
@@ -760,6 +810,70 @@ class Engine {
     if (structural) this.buildReturns()
   }
 
+  // ---------------- master-bus effect chain ----------------
+  // Everything sums at `this.master`; these effects sit between it and the
+  // limiter, so the whole mix (every track, bus, return, audio clip) passes
+  // through them — live and, mirrored in render.ts, in exports. Built with the
+  // same makeEffect()/BuiltFx machinery as track effects, so the device rack
+  // (target id 'master') drives it unchanged.
+  private buildMasterFx() {
+    this.builtMasterFx.forEach(bf => { try { bf.fx.dispose() } catch { /* ok */ } try { bf.out.dispose() } catch { /* ok */ } try { bf.meter.dispose() } catch { /* ok */ } })
+    this.builtMasterFx = []
+    try { this.master.disconnect() } catch { /* ok */ }   // detach old chain + meter taps
+    const metered = this.meteredTrackId === 'master'
+    let prev: Tone.ToneAudioNode = this.master
+    masterFx.forEach(f => {
+      if (!f.get('on')) return
+      const bf: BuiltFx = {
+        id: f.get('id'), type: f.get('type'),
+        fx: makeEffect(f.get('type'), (f.get('params') as Y.Map<number>).toJSON()),
+        out: new Tone.Volume(f.get('out') ?? 0),
+        meter: new Tone.Meter({ smoothing: 0.8 }),
+      }
+      Tone.connect(prev, bf.fx.node)
+      if (bf.fx.detect) Tone.connect(prev, bf.fx.detect)
+      Tone.connect(bf.fx.node, bf.out)
+      if (metered) bf.out.connect(bf.meter)
+      prev = bf.out
+      this.builtMasterFx.push(bf)
+    })
+    this.masterChainOut = prev
+    Tone.connect(prev, this.limiter)
+    // analysers/meter tap the chain tail so the master meter + spectrum reflect fx
+    ;(prev as any).connect(this.masterMeter)
+    ;(prev as any).connect(this.masterFFT)
+    ;(prev as any).connect(this.masterWave)
+    this.recomputeModActive()   // a master duck/autotune contributes a tick
+  }
+
+  private scheduleMasterFxRebuild() {
+    if (this.masterFxTimer) clearTimeout(this.masterFxTimer)
+    this.masterFxTimer = setTimeout(() => { this.masterFxTimer = null; this.buildMasterFx() }, 50)
+  }
+
+  private onMasterFxDeep = (events: Y.YEvent<any>[]) => {
+    if (!this.started) return
+    let structural = false
+    for (const ev of events) {
+      const path = ev.path
+      if (path.length === 0) { structural = true; continue }   // add / remove / reorder
+      const idx = path[0] as number
+      const fxMap = masterFx.get(idx)
+      const bf = fxMap && this.builtMasterFx.find(f => f.id === fxMap.get('id'))
+      if (path.length >= 2 && (path[path.length - 1] === 'params' || path[1] === 'params')) {
+        if (bf) ev.changes.keys.forEach((_c, key) => { const v = (ev.target as Y.Map<number>).get(key); if (typeof v === 'number') bf.fx.set(key, v) })
+        else structural = true
+      } else if (path.length === 2) {
+        // direct keys on an fx map: 'out' is a live ramp; 'on'/'type' rebuild
+        ev.changes.keys.forEach((_c, key) => {
+          if (key === 'out' && bf) bf.out.volume.rampTo(fxMap!.get('out') ?? 0, 0.03)
+          else structural = true
+        })
+      } else structural = true
+    }
+    if (structural) this.scheduleMasterFxRebuild()
+  }
+
   private disposeTrack(rec: BuiltTrack) {
     this.stopTrackNow(rec)
     try {
@@ -786,6 +900,7 @@ class Engine {
       if (!this.built.has(t.get('id'))) this.buildTrack(t)
     })
     this.rewireBuses()
+    this.recomputeModActive()
     this.emit()
   }
 
@@ -811,6 +926,7 @@ class Engine {
       })
     }
     this.rewireBuses()
+    this.recomputeModActive()
     this.emit()
   }
 
@@ -846,8 +962,9 @@ class Engine {
     // tear down the old fx nodes
     rec.fx.forEach(bf => { try { bf.fx.dispose() } catch { /* ok */ } try { bf.out.dispose() } catch { /* ok */ } try { bf.meter.dispose() } catch { /* ok */ } })
     // detach instOut's outputs (its meter tap + the old chain) and re-tap the meter
+    const metered = tid === this.meteredTrackId
     try { rec.instOut.disconnect() } catch { /* ok */ }
-    rec.instOut.connect(rec.instMeter)
+    if (metered) rec.instOut.connect(rec.instMeter)
     // build the current chain and splice instOut → [fx…] → panner
     const fx: BuiltFx[] = []
     ;(t.get('fx') as Y.Array<Y.Map<any>>).forEach(f => {
@@ -863,11 +980,12 @@ class Engine {
       Tone.connect(prev, bf.fx.node)
       if (bf.fx.detect) Tone.connect(prev, bf.fx.detect)
       Tone.connect(bf.fx.node, bf.out)
-      bf.out.connect(bf.meter)
+      if (metered) bf.out.connect(bf.meter)
       prev = bf.out
     })
     Tone.connect(prev, rec.panner)
     rec.fx = fx
+    this.recomputeModActive()   // fx tick set may have changed (duck/autotune)
     this.emit()
   }
 
@@ -947,6 +1065,9 @@ class Engine {
     // fx-chain changes re-splice in place (no part restart); skip if a full
     // rebuild is already queued for that track.
     fxDirty.forEach(tid => { if (!structural.has(tid)) this.scheduleFxRebuild(tid) })
+    // LFO add/remove doesn't rebuild the graph but changes whether the
+    // modulation loop must keep running — refresh the idle flag.
+    this.recomputeModActive()
   }
 
   private onClipsShallow = (ev: Y.YMapEvent<any>) => {
@@ -1002,6 +1123,13 @@ class Engine {
         }
       })
     }
+    // master-bus delays re-sync too
+    masterFx.forEach(f => {
+      if (f.get('type') === 'delay') {
+        const bf = this.builtMasterFx.find(x => x.id === f.get('id'))
+        bf?.fx.set('time', (f.get('params') as Y.Map<number>).get('time') ?? 2)
+      }
+    })
   }
 
   private applyLoopRegion() {
@@ -1452,14 +1580,70 @@ class Engine {
     return typeof v === 'number' ? v : Math.max(...(v as number[]))
   }
 
+  /** A built effect from either a track or the master bus (trackId === 'master'). */
+  private findBuiltFx(trackId: string, fxId: string): BuiltFx | undefined {
+    if (trackId === 'master') return this.builtMasterFx.find(f => f.id === fxId)
+    return this.built.get(trackId)?.fx.find(f => f.id === fxId)
+  }
+
   /** Per-device output level in dB. deviceId = 'inst' or an fx id. */
   deviceMeterDb(trackId: string, deviceId: string): number {
-    const rec = this.built.get(trackId)
-    if (!rec) return -100
-    const meter = deviceId === 'inst' ? rec.instMeter : rec.fx.find(f => f.id === deviceId)?.meter
+    const meter = deviceId === 'inst' ? this.built.get(trackId)?.instMeter : this.findBuiltFx(trackId, deviceId)?.meter
     if (!meter) return -100
     const v = meter.getValue()
     return typeof v === 'number' ? v : Math.max(...(v as number[]))
+  }
+
+  /** Live gain reduction (dB, ≤0) for a compressor-type fx — drives the GR meter. */
+  deviceReductionDb(trackId: string, fxId: string): number {
+    return this.findBuiltFx(trackId, fxId)?.fx.gr?.() ?? 0
+  }
+
+  /** Per-band gain reduction (dB, ≤0) for the multiband device. */
+  deviceBandReduction(trackId: string, fxId: string): number[] {
+    return this.findBuiltFx(trackId, fxId)?.fx.grBands?.() ?? []
+  }
+
+  // ---- metered-track scoping ----
+  // Per-instrument & per-effect meters are only useful in the open device rack.
+  // The UI calls setMeteredTrack(selTrackId) while the rack is shown and null on
+  // close, so only that one track's device meters feed analysers; every other
+  // track skips them, cutting always-on audio-thread work.
+  meteredTrackId: string | null = null
+  setMeteredTrack(tid: string | null) {
+    if (tid === this.meteredTrackId) return
+    this.setMetersFor(this.meteredTrackId, false)
+    this.meteredTrackId = tid
+    this.setMetersFor(tid, true)
+  }
+  private setMetersFor(tid: string | null, on: boolean) {
+    if (!tid) return
+    if (tid === 'master') { this.builtMasterFx.forEach(f => { try { on ? f.out.connect(f.meter) : f.out.disconnect(f.meter) } catch { /* ok */ } }); return }
+    const rec = this.built.get(tid)
+    if (rec) this.setRecMeters(rec, on)
+  }
+  private setRecMeters(rec: BuiltTrack, on: boolean) {
+    try {
+      if (on) { rec.instOut.connect(rec.instMeter); rec.fx.forEach(f => f.out.connect(f.meter)) }
+      else { try { rec.instOut.disconnect(rec.instMeter) } catch { /* ok */ } rec.fx.forEach(f => { try { f.out.disconnect(f.meter) } catch { /* ok */ } }) }
+    } catch { /* ok */ }
+  }
+
+  // ---- modulation-loop activity ----
+  // The per-frame modulation scan only needs to run while playing, or (when
+  // stopped) if anything free-running exists: an LFO, or an fx with a tick
+  // (sidechain ducker live-pumps, Auto-Tune corrects live input). Recomputed on
+  // graph changes so applyModulation can early-out to a true idle otherwise.
+  private modActive = false
+  private recomputeModActive() {
+    let active = this.builtMasterFx.some(f => !!f.fx.tick)   // a master ducker/autotune ticks
+    for (const r of this.built.values()) {
+      if (active) break
+      if (r.fx.some(f => !!f.fx.tick)) { active = true; break }
+      const t = trackById(r.id)
+      if (((t?.get('lfos') as Y.Array<any> | undefined)?.length ?? 0) > 0) { active = true; break }
+    }
+    this.modActive = active
   }
 
   masterDb(): number {

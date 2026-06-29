@@ -11,7 +11,13 @@ export type AudioPrefs = {
 }
 
 const KEY = 'sf-audio-prefs'
-const DEFAULTS: AudioPrefs = { oversample: true, latency: 'interactive', sampleRate: 'auto' }
+// Default to the NATIVE sample rate (not 2x/88.2kHz). Most of the graph is
+// linear and gains nothing from oversampling, so native rate roughly HALVES
+// audio-thread CPU — more tracks/effects before glitching. The nonlinear nodes
+// that actually alias (Drive, Heat) self-oversample 4x per-node regardless, and
+// users who want pristine FM/waveshaping can flip the 2x toggle in Audio
+// settings. Existing users keep whatever they already saved.
+const DEFAULTS: AudioPrefs = { oversample: false, latency: 'interactive', sampleRate: 'auto' }
 
 export function getAudioPrefs(): AudioPrefs {
   try {

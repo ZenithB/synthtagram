@@ -2,9 +2,9 @@
 // schema-driven knobs (drum kits get a pad selector), then the effect chain
 // with bypass / reorder / remove, then an add-effect menu.
 
-import React, { useRef, useState } from 'react'
+import React, { useRef, useState, useEffect } from 'react'
 import * as Y from 'yjs'
-import { DRUM_PADS } from '../types'
+import { DRUM_PADS, clamp } from '../types'
 import {
   trackById, setInstParam, setInstrument, addFx, removeFx, moveFx, setFxParam, setFxOn,
   setInstOut, setFxOut,
@@ -12,12 +12,12 @@ import {
   addMidiFx, removeMidiFx, setMidiFxParam, setMidiFxOn, midifxOf,
   ensureMacros, macrosOf, setMacroValue, addMacroTarget, clearMacroTargets, setMacroName,
   returns, setReturnGain, setReturnParam, setReturnFxType, setSamplerSample, setDrumPadSample, busList,
-  clips, clipKey, isAudioClip,
+  clips, clipKey, isAudioClip, masterFx,
 } from '../state/doc'
 import { attemptBusSend, assignKitToTrack } from './actions'
 import { useUI, toast } from '../state/store'
 import { useY, useRaf } from './hooks'
-import { Knob, openMenu } from './widgets'
+import { Knob, openMenu, beginVDrag } from './widgets'
 import {
   INSTRUMENTS, EFFECTS, instSchema, fxSchema, defaultsFor,
   LFO_SHAPES, LFO_DIVS, LFO_PARAMS, MIDI_FX, midiFxSchema, mixSpec, fmtPct, fmtDb, ParamSpec,
@@ -206,7 +206,7 @@ function InstrumentPanel({ trackId, track }: { trackId: string; track: Y.Map<any
           </select>
         )}
         {kind === 'audio' && <span className="device-audio-hint">audio clips · stereo · fx + sends apply</span>}
-        {kind === 'synth' && type !== 'sampler' && (
+        {kind === 'synth' && type !== 'sampler' && type !== 'ksampler' && (
           <button className="icon-btn" data-info="Save these settings as your own preset"
             onClick={() => {
               const name = prompt('Save preset as…', `My ${schema.label}`)
@@ -215,7 +215,7 @@ function InstrumentPanel({ trackId, track }: { trackId: string; track: Y.Map<any
         )}
       </div>
 
-      {type === 'sampler' && <SamplerControls trackId={trackId} inst={inst} />}
+      {(type === 'sampler' || type === 'ksampler') && <SamplerControls trackId={trackId} inst={inst} />}
 
       {kind === 'drum' ? (
         <div className="drum-panel"
@@ -283,14 +283,129 @@ function InstrumentPanel({ trackId, track }: { trackId: string; track: Y.Map<any
   )
 }
 
+// Live gain-reduction meter for compressor-type effects (comp / opto). Fills
+// downward as the compressor pulls the signal; reads the engine each frame.
+function GrMeter({ trackId, fxId }: { trackId: string; fxId: string }) {
+  const fill = useRef<HTMLDivElement>(null)
+  const val = useRef<HTMLSpanElement>(null)
+  useRaf(() => {
+    const gr = Math.max(0, -engine.deviceReductionDb(trackId, fxId))   // dB of reduction
+    if (fill.current) fill.current.style.width = `${Math.min(100, (gr / 24) * 100)}%`
+    if (val.current) val.current.textContent = gr > 0.05 ? `−${gr.toFixed(1)}` : '0.0'
+  })
+  return (
+    <div className="gr-meter" data-info="Gain reduction (dB)">
+      <span className="gr-cap">GR</span>
+      <div className="gr-track"><div ref={fill} className="gr-fill" /></div>
+      <span ref={val} className="gr-val">0.0</span>
+    </div>
+  )
+}
+
+// ---- Multiband: graphical band editor ----
+const MB_FMIN = 20, MB_FMAX = 20000
+const mbX = (f: number, W: number) => (Math.log(f / MB_FMIN) / Math.log(MB_FMAX / MB_FMIN)) * W
+const mbF = (x: number, W: number) => MB_FMIN * Math.pow(MB_FMAX / MB_FMIN, clamp(x, 0, W) / W)
+const mbY = (db: number, H: number) => (-db / 60) * H          // 0 dB top → −60 dB bottom
+const mbDb = (y: number, H: number) => clamp(-(y / H) * 60, -60, 0)
+
+// Live per-band gain-reduction bar, drawn descending from the top of the band.
+function MbGrBar({ trackId, fxId, band, x0, x1, H }: { trackId: string; fxId: string; band: number; x0: number; x1: number; H: number }) {
+  const ref = useRef<SVGRectElement>(null)
+  useRaf(() => {
+    const grs = engine.deviceBandReduction(trackId, fxId)
+    const gr = Math.max(0, -(grs[band] ?? 0))
+    if (ref.current) ref.current.setAttribute('height', String(Math.min(H, (gr / 24) * H)))
+  })
+  return <rect ref={ref} className="mb-gr" x={x0} y={0} width={Math.max(0, x1 - x0)} height={0} />
+}
+
+function MultibandCard({ trackId, fxId, params }: { trackId: string; fxId: string; params: Y.Map<number> }) {
+  const svgRef = useRef<SVGSVGElement>(null)
+  const [, force] = useState(0)
+  const W = 432, H = 132
+  const g = (k: string, d: number) => params.get(k) ?? d
+  const set = (k: string, v: number) => { setFxParam(trackId, fxId, k, v); force(n => n + 1) }
+  const sch = fxSchema('mbcomp')
+  const spec = (k: string) => sch.params.find(p => p.key === k)!
+
+  const mode = g('mode', 0) | 0
+  const xlo = g('xlo', 250), xhi = g('xhi', 2500)
+  const xloX = mbX(xlo, W), xhiX = mbX(xhi, W)
+  const bands = [
+    { i: 0, name: 'Low', x0: 0, x1: xloX, th: g('b0_thresh', -24) },
+    { i: 1, name: 'Mid', x0: xloX, x1: xhiX, th: g('b1_thresh', -24) },
+    { i: 2, name: 'High', x0: xhiX, x1: W, th: g('b2_thresh', -24) },
+  ]
+
+  const loc = (e: PointerEvent | React.PointerEvent) => {
+    const r = svgRef.current!.getBoundingClientRect()
+    return { x: (e.clientX - r.left) * (W / r.width), y: (e.clientY - r.top) * (H / r.height) }
+  }
+  const onDown = (e: React.PointerEvent) => {
+    if (e.button !== 0) return
+    e.stopPropagation()
+    const { x } = loc(e)
+    if (Math.abs(x - xloX) <= 7) {       // drag low/mid crossover
+      beginVDrag(ev => set('xlo', clamp(mbF(loc(ev).x, W), 60, Math.min(1000, g('xhi', 2500) - 20))))
+      return
+    }
+    if (Math.abs(x - xhiX) <= 7) {       // drag mid/high crossover
+      beginVDrag(ev => set('xhi', clamp(mbF(loc(ev).x, W), Math.max(1000, g('xlo', 250) + 20), 12000)))
+      return
+    }
+    // otherwise drag the threshold of whichever band the pointer is over
+    const band = bands.find(b => x >= b.x0 && x <= b.x1) ?? bands[2]
+    const setTh = (ev: PointerEvent | React.PointerEvent) => set(`b${band.i}_thresh`, Math.round(mbDb(loc(ev).y, H)))
+    setTh(e)
+    beginVDrag(setTh)
+  }
+
+  return (
+    <div className="mb-card">
+      <div className="mb-graph">
+        <svg ref={svgRef} width={W} height={H} viewBox={`0 0 ${W} ${H}`} className="mb-svg" onPointerDown={onDown}
+          data-info="Drag inside a band to set its threshold; drag the dividers to move crossovers. Bars show live gain reduction.">
+          {bands.map(b => (
+            <g key={b.i}>
+              <rect className={`mb-band ${b.i % 2 ? 'alt' : ''}`} x={b.x0} y={0} width={Math.max(0, b.x1 - b.x0)} height={H} />
+              <MbGrBar trackId={trackId} fxId={fxId} band={b.i} x0={b.x0} x1={b.x1} H={H} />
+              <line className="mb-thresh" x1={b.x0 + 2} y1={mbY(b.th, H)} x2={b.x1 - 2} y2={mbY(b.th, H)} />
+              <text className="mb-blabel" x={(b.x0 + b.x1) / 2} y={H - 6}>{b.name}</text>
+              <text className="mb-thlabel" x={(b.x0 + b.x1) / 2} y={mbY(b.th, H) - 4}>{Math.round(b.th)}dB</text>
+            </g>
+          ))}
+          <line className="mb-xover" x1={xloX} y1={0} x2={xloX} y2={H} />
+          <line className="mb-xover" x1={xhiX} y1={0} x2={xhiX} y2={H} />
+          <text className="mb-xlabel" x={xloX} y={11}>{xlo >= 1000 ? `${(xlo / 1000).toFixed(1)}k` : `${Math.round(xlo)}`}</text>
+          <text className="mb-xlabel" x={xhiX} y={11}>{xhi >= 1000 ? `${(xhi / 1000).toFixed(1)}k` : `${Math.round(xhi)}`}</text>
+        </svg>
+      </div>
+      <div className="mb-controls">
+        <button className={`tbtn mb-mode ${mode ? 'expand' : ''}`} data-info="Switch between multiband compression and downward expansion"
+          onClick={() => set('mode', mode ? 0 : 1)}>{mode ? 'Expand' : 'Comp'}</button>
+        <Knob spec={spec('attack')} value={g('attack', 0.02)} onChange={v => set('attack', v)} size={34} />
+        <Knob spec={spec('release')} value={g('release', 0.18)} onChange={v => set('release', v)} size={34} />
+        {[0, 1, 2].map(i => (
+          <div key={i} className="mb-bandctl">
+            <Knob spec={{ ...spec(`b${i}_ratio`), label: 'Ratio' }} value={g(`b${i}_ratio`, 2)} onChange={v => set(`b${i}_ratio`, v)} size={32} />
+            <Knob spec={{ ...spec(`b${i}_gain`), label: 'Gain' }} value={g(`b${i}_gain`, 0)} onChange={v => set(`b${i}_gain`, v)} size={32} />
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function FxCard({ trackId, fx }: { trackId: string; fx: Y.Map<any> }) {
   const type = fx.get('type') as string
   const fxId = fx.get('id') as string
   const on = !!fx.get('on')
   const params = fx.get('params') as Y.Map<number>
   const schema = fxSchema(type)
+  const isComp = type === 'comp' || type === 'opto'
   return (
-    <div className={`device fx-device ${on ? '' : 'bypassed'}`}>
+    <div className={`device fx-device ${on ? '' : 'bypassed'} ${type === 'mbcomp' ? 'mbcomp-device' : ''}`}>
       <div className="device-head">
         <button className={`power ${on ? 'on' : ''}`} data-info="Bypass effect" onClick={() => setFxOn(trackId, fxId, !on)}><Icon name="power" size={13} /></button>
         <span className="device-title"><Icon name={schema.icon} size={13} /> {schema.label}</span>
@@ -300,11 +415,18 @@ function FxCard({ trackId, fx }: { trackId: string; fx: Y.Map<any> }) {
           <button className="icon-btn" data-info="Remove effect" onClick={() => removeFx(trackId, fxId)}><Icon name="close" size={11} /></button>
         </span>
       </div>
-      <div className="knob-row">
-        {schema.params.map(spec => (
-          <Knob key={spec.key} spec={spec} value={params.get(spec.key) ?? spec.def} onChange={v => setFxParam(trackId, fxId, spec.key, v)} size={38} />
-        ))}
-      </div>
+      {type === 'mbcomp' ? (
+        <MultibandCard trackId={trackId} fxId={fxId} params={params} />
+      ) : (
+        <>
+          <div className="knob-row">
+            {schema.params.map(spec => (
+              <Knob key={spec.key} spec={spec} value={params.get(spec.key) ?? spec.def} onChange={v => setFxParam(trackId, fxId, spec.key, v)} size={38} />
+            ))}
+          </div>
+          {isComp && <GrMeter trackId={trackId} fxId={fxId} />}
+        </>
+      )}
       <DeviceOut trackId={trackId} deviceId={fxId} out={fx.get('out') ?? 0} onChange={v => setFxOut(trackId, fxId, v)} />
     </div>
   )
@@ -333,8 +455,21 @@ function SamplerControls({ trackId, inst }: { trackId: string; inst: Y.Map<any> 
     }
   }
   return (
-    <div className="sampler-controls">
-      <span className="sampler-name" data-info="Loaded sample (plays pitched by the notes you play)">{name || 'No sample'}</span>
+    <div className="sampler-controls"
+      onDragOver={e => { const ty = e.dataTransfer.types; if (ty.includes('stg/sample') || ty.includes('stg/clip')) { e.preventDefault(); e.stopPropagation() } }}
+      onDrop={e => {
+        e.stopPropagation()
+        const s = e.dataTransfer.getData('stg/sample')
+        if (s) { const [sid, nm] = s.split('::'); setSamplerSample(trackId, sid, nm || 'Sample'); toast(`Loaded “${nm || 'Sample'}”`); return }
+        const clipSrc = e.dataTransfer.getData('stg/clip')
+        if (clipSrc) {
+          const [srcT, srcS] = clipSrc.split('|')
+          const cm = clips.get(clipKey(srcT, srcS)) as Y.Map<any> | undefined
+          if (cm && isAudioClip(cm)) setSamplerSample(trackId, cm.get('sampleId'), cm.get('sampleName') || 'Sample')
+          else toast('Only audio clips can load into the sampler')
+        }
+      }}>
+      <span className="sampler-name" data-info="Loaded sample (plays pitched by the notes you play). Drag a sample here, or Load / Rec.">{name || 'No sample — drag a sample here'}</span>
       <button className="tbtn" onClick={pickFile} data-info="Import an audio file as the sample"><Icon name="folder" size={12} /> Load</button>
       <button className={`tbtn ${recording ? 'on' : ''}`} onClick={toggleRec} data-info="Record from your microphone"><Icon name="mic" size={12} /> {recording ? 'Stop' : 'Rec'}</button>
     </div>
@@ -450,11 +585,40 @@ function ReturnCard({ idx, ret }: { idx: number; ret: Y.Map<any> }) {
   )
 }
 
+// Master-bus effect chain. The whole mix passes through these (after every
+// track + return) before the limiter — live and in exports. Reuses FxCard with
+// the special 'master' target, so every effect (incl. the new comp/opto/
+// multiband + their meters) works here unchanged.
+function MasterRack() {
+  useY(masterFx)
+  return (
+    <div className="rack">
+      <div className="bus-input-label" data-info="The entire mix passes through these effects before the output limiter"><Icon name="spectrum" size={13} /> Master bus</div>
+      <div className="chain-arrow">→</div>
+      {masterFx.toArray().map(f => <FxCard key={f.get('id')} trackId="master" fx={f} />)}
+      <button className="add-fx" data-info="Add an effect to the master bus (applies to the whole mix)"
+        onClick={e => openMenu(e, EFFECTS.map(ef => ({
+          label: <><Icon name={ef.icon} size={12} /> {ef.label}</>,
+          fn: () => addFx('master', ef.type, defaultsFor(ef.params)),
+        })))}>
+        <Icon name="plus" size={12} /> Effect
+      </button>
+    </div>
+  )
+}
+
 export function DeviceRack() {
   const selTrackId = useUI(s => s.selTrackId)
-  const track = selTrackId ? trackById(selTrackId) : undefined
+  const track = selTrackId && selTrackId !== 'master' ? trackById(selTrackId) : undefined
   useY(track)
   useY(returns)
+  // Only the open device rack runs per-device meters (engine scopes the analysers
+  // to this track); release them when the rack closes or the selection changes.
+  useEffect(() => {
+    engine.setMeteredTrack(selTrackId ?? null)
+    return () => engine.setMeteredTrack(null)
+  }, [selTrackId])
+  if (selTrackId === 'master') return <MasterRack />
   if (!selTrackId || !track) {
     return <div className="roll-empty">Select a track to see its instrument & effects</div>
   }
