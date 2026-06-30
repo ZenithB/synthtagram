@@ -1214,7 +1214,9 @@ class Engine {
         when = Math.max(Tone.immediate(), time + Tone.Ticks(jitterTicks).toSeconds())
         vel = clamp(ev.v + (Math.random() * 2 - 1) * 0.1 * h, 0.02, 1)
       }
-      rec.inst.trigger(ev.p, Math.max(0.02, Tone.Ticks(ev.d).toSeconds()), when, vel)
+      // skip a note that can't schedule (e.g. two on the same tick restarting one
+      // oscillator-based voice) rather than killing the part's callback
+      try { rec.inst.trigger(ev.p, Math.max(0.02, Tone.Ticks(ev.d).toSeconds()), when, vel) } catch { /* ok */ }
     }, events as any)
     part.loop = true
     part.loopStart = 0

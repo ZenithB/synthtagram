@@ -351,7 +351,11 @@ async function renderBuffer(
         const events = notes.map(n => ({ time: `${n.s}i`, ...n }))
         const part = new Tone.Part((time, ev: any) => {
           if (ev.pr < 1 && Math.random() > ev.pr) return
-          ot.inst.trigger(ev.p, Math.max(0.02, Tone.Ticks(ev.d).toSeconds()), time, ev.v)
+          // Two notes on the exact same tick hitting one oscillator-based voice
+          // (mono synth, kick/perc pad) restart its Source at a non-increasing time
+          // → "Start time must be strictly greater than previous start time", which
+          // aborts the bounce. Skip the duplicate (inaudible anyway on a mono voice).
+          try { ot.inst.trigger(ev.p, Math.max(0.02, Tone.Ticks(ev.d).toSeconds()), time, ev.v) } catch { /* ok */ }
         }, events as any)
         part.loop = true
         part.loopStart = 0
