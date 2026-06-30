@@ -11,7 +11,7 @@ import {
   addLfo, removeLfo, setLfoField, setLfoTarget,
   addMidiFx, removeMidiFx, setMidiFxParam, setMidiFxOn, midifxOf,
   ensureMacros, macrosOf, setMacroValue, addMacroTarget, clearMacroTargets, setMacroName,
-  returns, setReturnGain, setReturnParam, setReturnFxType, setSamplerSample, setDrumPadSample, busList,
+  setSamplerSample, setDrumPadSample, busList,
   clips, clipKey, isAudioClip, masterFx,
 } from '../state/doc'
 import { attemptBusSend, assignKitToTrack } from './actions'
@@ -559,31 +559,6 @@ function MacroPanel({ trackId, track }: { trackId: string; track: Y.Map<any> }) 
   )
 }
 
-function ReturnCard({ idx, ret }: { idx: number; ret: Y.Map<any> }) {
-  const type = ret.get('fxType') as string
-  const params = ret.get('params') as Y.Map<number>
-  const schema = fxSchema(type)
-  const gainSpec: ParamSpec = { key: 'g', label: 'Vol', min: -48, max: 6, def: 0, fmt: v => `${v > 0 ? '+' : ''}${v.toFixed(0)}dB` }
-  return (
-    <div className="device return-device">
-      <div className="device-head">
-        <span className="device-title"><Icon name="reverb" size={13} /> {ret.get('name')}</span>
-        <select className="device-select" value={type}
-          data-info="Effect on this return bus"
-          onChange={e => setReturnFxType(idx, e.target.value, defaultsFor(fxSchema(e.target.value).params))}>
-          {EFFECTS.filter(f => f.type !== 'duck').map(f => <option key={f.type} value={f.type}>{f.label}</option>)}
-        </select>
-      </div>
-      <div className="knob-row">
-        {schema.params.map(spec => (
-          <Knob key={spec.key} spec={spec} value={params.get(spec.key) ?? spec.def} onChange={v => setReturnParam(idx, spec.key, v)} size={34} />
-        ))}
-        <Knob spec={gainSpec} value={ret.get('gain') ?? 0} onChange={v => setReturnGain(idx, v)} size={34} />
-      </div>
-    </div>
-  )
-}
-
 // Master-bus effect chain. The whole mix passes through these (after every
 // track + return) before the limiter — live and in exports. Reuses FxCard with
 // the special 'master' target, so every effect (incl. the new comp/opto/
@@ -610,7 +585,6 @@ export function DeviceRack() {
   const selTrackId = useUI(s => s.selTrackId)
   const track = selTrackId && selTrackId !== 'master' ? trackById(selTrackId) : undefined
   useY(track)
-  useY(returns)
   // Only the open device rack runs per-device meters (engine scopes the analysers
   // to this track); release them when the rack closes or the selection changes.
   useEffect(() => {
@@ -662,8 +636,6 @@ export function DeviceRack() {
       </button>
       <MacroPanel trackId={selTrackId} track={track} />
       <SendsCard trackId={selTrackId} track={track} />
-      <div className="rack-divider" data-info="Shared return buses — every track sends here" />
-      {returns.toArray().map((r, i) => <ReturnCard key={r.get('id')} idx={i} ret={r} />)}
     </div>
   )
 }

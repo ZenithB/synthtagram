@@ -2,7 +2,7 @@ import React from 'react'
 import { createRoot } from 'react-dom/client'
 import './styles.css'
 import { App } from './ui/App'
-import { idb, initIfEmpty, isDocEmpty, maybeTakeCarried, roomId } from './state/doc'
+import { idb, initIfEmpty, isDocEmpty, maybeTakeCarried, roomId, cleanupLegacyReturns } from './state/doc'
 import { startP2P, setPresence, requestState } from './state/net'
 import { DEFAULT_PROJECT } from './packs'
 import { initKeyboardPiano, initWebMidi } from './audio/input'
@@ -15,6 +15,9 @@ async function boot() {
   // moving a project into a fresh share-room carries the FULL document across
   // the reload (lossless — sends, LFOs, macros, returns, automation and all)
   maybeTakeCarried()
+
+  // one-time migration: drop legacy A/B return channels (replaced by A/B buses)
+  cleanupLegacyReturns()
 
   if (roomId) {
     // Joining someone's room: wait for the project to arrive over P2P. Crucially

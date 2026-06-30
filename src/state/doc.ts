@@ -536,6 +536,15 @@ export const returns = doc.getArray<Y.Map<any>>('returns')
 // the legacy return channels. Old projects that saved `returns` still load them
 // (loadProject) and the engine falls back to wiring the A/B sends into them.
 export function ensureReturns() { /* no-op: A/B are bus tracks now */ }
+/** Drop the superseded legacy A/B return channels once the project has the
+ *  dedicated A/B send buses — they no longer receive any sends, they just waste a
+ *  reverb/delay node and show up as orphaned "A · Reverb" / "B · Delay" devices.
+ *  `returns` isn't undo-tracked, so this won't appear in undo history. */
+export function cleanupLegacyReturns() {
+  if (returns.length === 0) return
+  const hasABuses = busList().some(b => b.get('send') === 'A' || b.get('send') === 'B')
+  if (hasABuses) mutate('Clean up legacy returns', () => returns.delete(0, returns.length))
+}
 export function returnAt(i: number): Y.Map<any> | undefined { return returns.get(i) }
 export function setReturnGain(i: number, v: number) {
   mutate('Return volume', () => returns.get(i)?.set('gain', v))
@@ -1199,15 +1208,9 @@ export function loadProject(json: ProjectJSON, label = 'Load project') {
     // master-bus effect chain + automation
     if (json.masterFx?.length) masterFx.push(json.masterFx.map(f => yFx(f)))
     if (json.masterAuto) for (const [k, pts] of Object.entries(json.masterAuto)) { const a = new Y.Array<any>(); a.push(pts.map(p => ({ ...p }))); masterAuto.set(k, a) }
-    // return buses (preserve ids so send routing stays valid)
-    if (json.returns?.length) {
-      returns.push(json.returns.map(r => {
-        const m = new Y.Map<any>()
-        m.set('id', r.id ?? id8()); m.set('name', r.name); m.set('fxType', r.fxType); m.set('gain', r.gain)
-        const pm = new Y.Map<number>(); for (const [k, v] of Object.entries(r.params)) pm.set(k, v); m.set('params', pm)
-        return m
-      }))
-    }
+    // Legacy A/B return channels are NOT restored — they've been replaced by the
+    // dedicated A/B send buses (added below via DEFAULT_BUSES). Old project files
+    // keep their `returns` data but it's ignored on load.
     // id remapping (packs may use friendly ids)
     const tidMap = new Map<string, string>()
     const sidMap = new Map<string, string>()
