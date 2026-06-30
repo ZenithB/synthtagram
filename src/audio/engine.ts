@@ -11,10 +11,10 @@ import { BAR, STEP16, Note, clamp } from '../types'
 import {
   meta, tracks, clips, arr, clipKey, notesOf, addNote, updateNotes,
   createClip, trackById, returns, ensureReturns, midifxOf, envKeys, envPoints, followOf, scenes, sceneIndex,
-  isAudioClip, masterFx,
+  isAudioClip, masterFx, masterAuto,
 } from '../state/doc'
 import { makeInstrument, makeEffect, Inst, Fx } from './devices'
-import { instSchema, fxSchema, lfoShapeValue, LFO_DIV_TICKS, mixSpec, midiFxSchema, valueFromSpec } from './schema'
+import { instSchema, fxSchema, lfoShapeValue, LFO_DIV_TICKS, mixSpec, midiFxSchema, valueFromSpec, ParamSpec } from './schema'
 import { getSampleBuffer, onSampleReady } from './samples'
 import { clipAudioBuffer, configureAudioPlayer, audioFieldsFromMap, audioRate } from './audioclip'
 import { applyMidiFx as applyMidiFxData } from './midifx'
@@ -538,6 +538,20 @@ class Engine {
       }
     }
 
+    // ---- master-bus arrangement automation (its own auto store, not a track) ----
+    if (playing && this.mode === 'arr') {
+      const tick = this.transport.ticks
+      masterAuto.forEach((arr2: Y.Array<any>, k: string) => {
+        const pts = arr2.toArray()
+        if (!pts.length) return
+        const r = this.resolveMasterTarget(k)
+        if (!r) return
+        r.setter(clamp(valueFromSpec(r.spec, this.envValueAt(pts, tick, 0)), r.spec.min, r.spec.max))
+        const [dest, fxId, pkey] = k.split('|')
+        newActive.set(`master|${k}`, { tid: 'master', dest, fxId: fxId || '', pkey })
+      })
+    }
+
     // master-bus effects that need a transport-synced tick (e.g. a ducker on the mix)
     if (this.builtMasterFx.length) {
       const bpm = this.transport.bpm.value
@@ -567,11 +581,35 @@ class Engine {
   }
 
   private restoreParam(m: { tid: string; dest: string; fxId: string; pkey: string }) {
+    if (m.tid === 'master') {
+      const r = this.resolveMasterTarget(`${m.dest}|${m.fxId}|${m.pkey}`)
+      if (r) r.setter(r.base)
+      return
+    }
     const t = trackById(m.tid)
     const rec = this.built.get(m.tid)
     if (!t || !rec) return
     const r = this.resolveTarget(t, rec, m.dest, m.fxId, m.pkey)
     if (r) r.setter(r.base)
+  }
+
+  /** Resolve a master-bus automation key to its spec, base value and live setter. */
+  private resolveMasterTarget(key: string): { spec: ParamSpec; base: number; setter: (v: number) => void } | null {
+    const [dest, fxId, pkey] = key.split('|')
+    if (dest === 'mix' && pkey === 'gain') {
+      const spec = mixSpec('gain'); if (!spec) return null
+      return { spec, base: (meta.get('masterGain') as number) ?? 0, setter: v => this.master.volume.rampTo(v, 0.02) }
+    }
+    if (dest === 'fx') {
+      const fxMap = masterFx.toArray().find(f => f.get('id') === fxId)
+      const bf = this.builtMasterFx.find(f => f.id === fxId)
+      if (!fxMap || !bf) return null
+      const spec = fxSchema(fxMap.get('type')).params.find(s => s.key === pkey)
+      const base = (fxMap.get('params') as Y.Map<number>).get(pkey)
+      if (!spec || typeof base !== 'number') return null
+      return { spec, base, setter: v => bf.fx.set(pkey, v) }
+    }
+    return null
   }
 
   /** Live LFO output [-1,1] for the UI indicator. */

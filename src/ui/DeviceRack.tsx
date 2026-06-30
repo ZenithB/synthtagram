@@ -8,7 +8,7 @@ import { DRUM_PADS, clamp } from '../types'
 import {
   trackById, setInstParam, setInstrument, addFx, removeFx, moveFx, setFxParam, setFxOn,
   setInstOut, setFxOut,
-  addLfo, removeLfo, setLfoField, setLfoTarget, setSend,
+  addLfo, removeLfo, setLfoField, setLfoTarget,
   addMidiFx, removeMidiFx, setMidiFxParam, setMidiFxOn, midifxOf,
   ensureMacros, macrosOf, setMacroValue, addMacroTarget, clearMacroTargets, setMacroName,
   returns, setReturnGain, setReturnParam, setReturnFxType, setSamplerSample, setDrumPadSample, busList,
@@ -28,8 +28,6 @@ import { saveUserPreset } from '../userlib'
 import { importSampleFile, startSampleRecording, stopSampleRecording, isRecordingSample } from '../audio/samples'
 import { Icon } from './icons'
 
-const SEND_A_SPEC: ParamSpec = { key: 'sendA', label: '→ A', min: 0, max: 1, def: 0, fmt: fmtPct }
-const SEND_B_SPEC: ParamSpec = { key: 'sendB', label: '→ B', min: 0, max: 1, def: 0, fmt: fmtPct }
 const MACRO_SPEC: ParamSpec = { key: 'm', label: '', min: 0, max: 1, def: 0, fmt: fmtPct }
 const OUT_SPEC: ParamSpec = { key: 'out', label: 'Out', min: -30, max: 30, def: 0, fmt: fmtDb }
 
@@ -504,19 +502,20 @@ function MidiFxCard({ trackId, fx }: { trackId: string; fx: Y.Map<any> }) {
 
 function SendsCard({ trackId, track }: { trackId: string; track: Y.Map<any> }) {
   const sends = track.get('sends') as Y.Map<number> | undefined
-  // exclude self and the built-in A/B buses (those are the dedicated →A/→B knobs)
-  const buses = busList().filter(b => b.get('id') !== trackId && !b.get('locked'))
+  // Every bus is a send target now — A and B are just pre-set buses, sent to via
+  // the same per-bus send level as any user bus (no more dedicated →A/→B knobs).
+  const buses = busList().filter(b => b.get('id') !== trackId)
   return (
     <div className="device sends-device">
       <div className="device-head"><span className="device-title"><Icon name="send" size={13} /> Sends</span></div>
       <div className="knob-row">
-        <Knob spec={SEND_A_SPEC} value={track.get('sendA') ?? 0} onChange={v => setSend(trackId, 'sendA', v)} size={36} />
-        <Knob spec={SEND_B_SPEC} value={track.get('sendB') ?? 0} onChange={v => setSend(trackId, 'sendB', v)} size={36} />
-        {buses.map(b => {
-          const bid = b.get('id') as string
-          const spec: ParamSpec = { key: `bus-${bid}`, label: `→ ${b.get('name')}`, min: 0, max: 1, def: 0, fmt: fmtPct }
-          return <Knob key={bid} spec={spec} value={(sends?.get(bid) as number) ?? 0} onChange={v => attemptBusSend(trackId, bid, v)} size={36} />
-        })}
+        {buses.length === 0
+          ? <span className="device-audio-hint">No buses to send to</span>
+          : buses.map(b => {
+            const bid = b.get('id') as string
+            const spec: ParamSpec = { key: `bus-${bid}`, label: `→ ${b.get('name')}`, min: 0, max: 1, def: 0, fmt: fmtPct }
+            return <Knob key={bid} spec={spec} value={(sends?.get(bid) as number) ?? 0} onChange={v => attemptBusSend(trackId, bid, v)} size={36} />
+          })}
       </div>
     </div>
   )

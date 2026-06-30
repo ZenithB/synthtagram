@@ -27,6 +27,10 @@ export const chat = doc.getArray<any>('chat')
 // Master-bus effect chain — the whole mix passes through these before the
 // limiter, live and in exports. Same fx-map shape as a track's `fx`.
 export const masterFx = doc.getArray<Y.Map<any>>('masterFx')
+// Master-bus arrangement automation: paramKey → Y.Array<{t,v}>, mirroring a
+// track's `auto` map. Its open/selected-param UI state lives on `meta`
+// (masterAutoOpen / masterAutoParam) since the master isn't a `tracks` entry.
+export const masterAuto = doc.getMap<Y.Array<any>>('masterAuto')
 
 export const idb = new IndexeddbPersistence(docName, doc)
 
@@ -80,13 +84,14 @@ export type TrackJSON = {
   autoOpen?: boolean; autoParam?: string
 }
 export type ProjectJSON = {
-  meta: { title: string; bpm: number; swing: number; swingSubdivision?: string; humanize?: number; root: number; scale: string; launchQ: number; masterGain?: number; loopOn?: boolean; loopStart?: number; loopEnd?: number }
+  meta: { title: string; bpm: number; swing: number; swingSubdivision?: string; humanize?: number; root: number; scale: string; launchQ: number; masterGain?: number; loopOn?: boolean; loopStart?: number; loopEnd?: number; masterAutoOpen?: boolean; masterAutoParam?: string }
   tracks: TrackJSON[]
   scenes: { id?: string; name: string }[]
   clips: Record<string, ClipJSON>
   arr: Record<string, ClipJSON & { trackId: string; start: number }>
   returns?: ReturnJSON[]
   masterFx?: FxJSON[]
+  masterAuto?: Record<string, { t: number; v: number }[]>
 }
 
 // The two built-in send buses every session starts with — undeletable, full fx
@@ -547,10 +552,6 @@ export function setReturnFxType(i: number, type: string, params: Record<string, 
 export function setReturnParam(i: number, key: string, v: number) {
   mutate('Return effect', () => (returns.get(i)?.get('params') as Y.Map<number>)?.set(key, v))
 }
-export function setSend(trackId: string, which: 'sendA' | 'sendB', v: number) {
-  mutate('Send level', () => trackById(trackId)?.set(which, v))
-}
-
 // ---------- buses ----------
 export function busList(): Y.Map<any>[] {
   return tracks.toArray().filter(t => t.get('kind') === 'bus')
@@ -736,31 +737,45 @@ export function envKeys(clipMap: Y.Map<any>): string[] {
 // ---------- arrangement (track-timeline) automation ----------
 // Same {t,v} breakpoint shape as clip envelopes, but stored per TRACK keyed by
 // paramId, with t in ABSOLUTE song ticks (independent of clips).
+// The master bus isn't a `tracks` entry — its automation lives in the top-level
+// `masterAuto` map and its lane UI state in `meta`. These helpers transparently
+// route trackId === 'master' there so the arrangement + engine treat it like any
+// other track's automation.
+function autoMapFor(trackId: string): Y.Map<any> | undefined {
+  if (trackId === 'master') return masterAuto as unknown as Y.Map<any>
+  return trackById(trackId)?.get('auto') as Y.Map<any> | undefined
+}
 export function trackAutoKeys(trackId: string): string[] {
-  const am = trackById(trackId)?.get('auto') as Y.Map<any> | undefined
+  const am = autoMapFor(trackId)
   if (!am) return []
   const out: string[] = []
   am.forEach((_v, k) => out.push(k))
   return out
 }
 export function trackAutoPoints(trackId: string, key: string): { t: number; v: number }[] {
-  const am = trackById(trackId)?.get('auto') as Y.Map<any> | undefined
-  const a = am?.get(key) as Y.Array<any> | undefined
+  const a = autoMapFor(trackId)?.get(key) as Y.Array<any> | undefined
   return a ? a.toArray().map(p => ({ ...p })) : []
 }
 export function setTrackAutoPoints(trackId: string, key: string, points: { t: number; v: number }[]) {
-  const t = trackById(trackId); if (!t) return
   mutate('Edit automation', () => {
-    let am = t.get('auto') as Y.Map<any> | undefined
-    if (!am) { am = new Y.Map<any>(); t.set('auto', am) }
+    let am: Y.Map<any> | undefined
+    if (trackId === 'master') am = masterAuto as unknown as Y.Map<any>
+    else { const t = trackById(trackId); if (!t) return; am = t.get('auto') as Y.Map<any> | undefined; if (!am) { am = new Y.Map<any>(); t.set('auto', am) } }
+    if (!am) return
     if (points.length === 0) { am.delete(key); return }
     const a = new Y.Array<any>()
     a.push(points.slice().sort((x, y) => x.t - y.t).map(p => ({ t: Math.round(p.t), v: p.v })))
     am.set(key, a)
   })
 }
-export const setAutoOpen = (trackId: string, v: boolean) => { const t = trackById(trackId); if (t) mutate('Toggle automation', () => t.set('autoOpen', v)) }
-export const setAutoParam = (trackId: string, key: string) => { const t = trackById(trackId); if (t) mutate('Automation parameter', () => t.set('autoParam', key)) }
+export const setAutoOpen = (trackId: string, v: boolean) => {
+  if (trackId === 'master') { mutate('Toggle automation', () => meta.set('masterAutoOpen', v)); return }
+  const t = trackById(trackId); if (t) mutate('Toggle automation', () => t.set('autoOpen', v))
+}
+export const setAutoParam = (trackId: string, key: string) => {
+  if (trackId === 'master') { mutate('Automation parameter', () => meta.set('masterAutoParam', key)); return }
+  const t = trackById(trackId); if (t) mutate('Automation parameter', () => t.set('autoParam', key))
+}
 
 // ---------- follow actions (session clips) ----------
 export function setFollow(clipMap: Y.Map<any>, patch: Record<string, any>) {
@@ -1102,6 +1117,8 @@ export function exportProject(): ProjectJSON {
       launchQ: meta.get('launchQ') ?? 1,
       masterGain: meta.get('masterGain') ?? 0,
       loopOn: !!meta.get('loopOn'), loopStart: meta.get('loopStart') ?? 0, loopEnd: meta.get('loopEnd') ?? BAR * 4,
+      ...(meta.get('masterAutoOpen') ? { masterAutoOpen: true } : {}),
+      ...(meta.get('masterAutoParam') ? { masterAutoParam: meta.get('masterAutoParam') } : {}),
     },
     tracks: tracks.toArray().map(t => {
       const inst = t.get('inst') as Y.Map<any>
@@ -1158,6 +1175,7 @@ export function exportProject(): ProjectJSON {
       id: f.get('id'), type: f.get('type'), on: f.get('on'), out: f.get('out') ?? 0,
       params: Object.fromEntries((f.get('params') as Y.Map<number>).entries()),
     })),
+    masterAuto: (() => { const o: Record<string, { t: number; v: number }[]> = {}; masterAuto.forEach((a, k) => { o[k] = (a as Y.Array<any>).toArray().map(p => ({ ...p })) }); return o })(),
   }
 }
 
@@ -1174,11 +1192,13 @@ export function loadProject(json: ProjectJSON, label = 'Load project') {
     ak.forEach(k => arr.delete(k))
     if (returns.length) returns.delete(0, returns.length)
     if (masterFx.length) masterFx.delete(0, masterFx.length)
+    masterAuto.forEach((_v, k) => masterAuto.delete(k))
     // meta
     for (const [k, v] of Object.entries(json.meta)) meta.set(k, v)
     meta.set('inited', true)
-    // master-bus effect chain
+    // master-bus effect chain + automation
     if (json.masterFx?.length) masterFx.push(json.masterFx.map(f => yFx(f)))
+    if (json.masterAuto) for (const [k, pts] of Object.entries(json.masterAuto)) { const a = new Y.Array<any>(); a.push(pts.map(p => ({ ...p }))); masterAuto.set(k, a) }
     // return buses (preserve ids so send routing stays valid)
     if (json.returns?.length) {
       returns.push(json.returns.map(r => {

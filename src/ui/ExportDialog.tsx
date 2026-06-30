@@ -20,10 +20,15 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
 
   useRaf(() => { if (isRecording()) setRecT(recordingSeconds()) })
 
+  const [stems, setStems] = useState(false)
   const sceneId = ui.selClip?.kind === 'session' ? ui.selClip.sceneId : null
-  const opts = () => ({ format, channels, kbps, stems: false })
+  const opts = () => ({ format, channels, kbps, stems })
 
-  const run = (scope: RenderScope, stems = false) => { exportAudio(scope, { ...opts(), stems }); if (!stems) onClose() }
+  // Stems now honour the chosen scope (arrangement / loop / selected scene) — it
+  // used to be hardcoded to the arrangement, so it "failed every time" for anyone
+  // working in scenes with an empty arrangement. Keep the dialog open during a
+  // stems bounce (several files) so its progress toasts are visible.
+  const run = (scope: RenderScope) => { exportAudio(scope, opts()); if (!stems) onClose() }
 
   const toggleRec = async () => {
     if (isRecording()) { setRec(false); await stopRecording(format, channels, kbps) }
@@ -61,11 +66,18 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
           </div>
         </div>
 
+        <div className="export-row">
+          <span className="export-label">Bounce</span>
+          <div className="seg">
+            <button className={!stems ? 'on' : ''} onClick={() => setStems(false)} data-info="One mixed-down file">Mixdown</button>
+            <button className={stems ? 'on' : ''} onClick={() => setStems(true)} data-info="One file per track + bus (of the chosen range below)">Per-track stems</button>
+          </div>
+        </div>
+
         <div className="export-actions">
           <button className="export-btn" onClick={() => run({ kind: 'arr' })}><Icon name="download" size={13} /> Arrangement</button>
           <button className="export-btn" onClick={() => run({ kind: 'loop' })}><Icon name="loop" size={13} /> Loop region</button>
-          <button className="export-btn" disabled={!sceneId} onClick={() => sceneId && run({ kind: 'scene', sceneId })}><Icon name="play" size={13} /> Selected scene</button>
-          <button className="export-btn" onClick={() => run({ kind: 'arr' }, true)}><Icon name="chord" size={13} /> Stems (per track)</button>
+          <button className="export-btn" disabled={!sceneId} data-info={sceneId ? 'Export the selected scene' : 'Select a clip in a scene first'} onClick={() => sceneId && run({ kind: 'scene', sceneId })}><Icon name="play" size={13} /> Selected scene</button>
         </div>
 
         <div className="export-divider" />

@@ -8,7 +8,7 @@ import { BAR, CLIP_COLORS, clamp, ticksToBBS } from '../types'
 import {
   tracks, arr, meta, addArrClip, moveArrClip, resizeArrClip, deleteArrClip,
   duplicateArrClip, setClipField, setLoopRegion, arrEndTicks, setTrackMix, clipToJSON,
-  clips, clipKey, setAutoOpen, setAutoParam, renameTrack,
+  clips, clipKey, setAutoOpen, setAutoParam, renameTrack, setMetaField, trackAutoKeys, masterAuto,
 } from '../state/doc'
 import { autoTargets } from '../audio/params'
 import { AutomationLane } from './AutomationLane'
@@ -27,6 +27,19 @@ const HEAD_W = 168
 
 // Pan control spec (mirrors Session view): -1 full left … +1 full right.
 const PAN_SPEC = { key: 'pan', label: 'Pan', min: -1, max: 1, def: 0, fmt: (v: number) => (Math.abs(v) < 0.02 ? 'C' : v < 0 ? `${Math.round(-v * 50)}L` : `${Math.round(v * 50)}R`) }
+
+// A timeline row: instrument/audio/drum tracks (which hold clips), then bus
+// tracks, then the master bus. Buses + master carry no clips but get a head and
+// an automation lane. `track` is undefined for the synthetic master row.
+type ArrRow = { id: string; name: string; color: number; kind: string; clips: boolean; track?: Y.Map<any>; autoOpen: boolean; autoParam: string; mute: boolean; solo: boolean }
+function toRow(t: Y.Map<any>): ArrRow {
+  return {
+    id: t.get('id'), name: t.get('name'), color: t.get('color') ?? 0, kind: t.get('kind'),
+    clips: t.get('kind') !== 'bus', track: t,
+    autoOpen: !!t.get('autoOpen'), autoParam: (t.get('autoParam') as string) ?? 'mix||gain',
+    mute: !!t.get('mute'), solo: !!t.get('solo'),
+  }
+}
 
 function usePresence() {
   return useSyncExternalStore(subscribeAwareness, awarenessVersion)
@@ -66,6 +79,7 @@ export function ArrangementView() {
   useY(tracks)
   useY(arr)
   useY(meta)
+  useY(masterAuto)   // master-bus automation lives outside `tracks`; observe it for the dot + lane
   const zoom = useUI(s => s.zoomPxPerBar)
   const uiZoom = useUI(s => s.uiZoom)
   const pxPerTick = zoom / BAR
@@ -85,30 +99,41 @@ export function ArrangementView() {
     if (headsRef.current) headsRef.current.style.transform = `translateY(${-e.currentTarget.scrollTop}px)`
   }
 
-  const trackArr = tracks.toArray().filter(t => t.get('kind') !== 'bus')   // buses hold no clips
-  const laneOf = (tid: string) => trackArr.findIndex(t => t.get('id') === tid)
+  // Rows: clip tracks first, then bus tracks, then master. Clips live only on the
+  // first `nClipRows`; buses + master are head + automation only.
+  const allTracks = tracks.toArray()
+  const instrTracks = allTracks.filter(t => t.get('kind') !== 'bus')
+  const busTracks = allTracks.filter(t => t.get('kind') === 'bus')
+  const rows: ArrRow[] = [
+    ...instrTracks.map(toRow), ...busTracks.map(toRow),
+    {
+      id: 'master', name: 'Master', color: -1, kind: 'master', clips: false, track: undefined,
+      autoOpen: !!meta.get('masterAutoOpen'), autoParam: (meta.get('masterAutoParam') as string) ?? 'mix||gain', mute: false, solo: false,
+    },
+  ]
+  const nClipRows = instrTracks.length
+  const laneOf = (tid: string) => rows.findIndex(r => r.id === tid)
   const totalBars = Math.max(33, Math.ceil(arrEndTicks() / BAR) + 9)
   const width = totalBars * zoom
 
-  // Vertical row layout: each track is one row (LANE_H); if its automation lane
-  // is expanded, an equal-height row follows directly below it. Everything (clip
+  // Vertical row layout: each row is one band (LANE_H); if its automation lane
+  // is expanded, an equal-height band follows directly below it. Everything (clip
   // tops, lane backgrounds, hit-testing, the heads column) derives from this so
   // the two columns stay aligned.
   const trackTop: Record<string, number> = {}
   const autoTop: Record<string, number> = {}
-  const bgRows: { tid: string; kind: 'track' | 'auto'; top: number }[] = []
+  const bgRows: { tid: string; kind: 'track' | 'auto'; top: number; clips: boolean }[] = []
   let yAcc = 0
-  for (const t of trackArr) {
-    const tid = t.get('id') as string
-    trackTop[tid] = yAcc; bgRows.push({ tid, kind: 'track', top: yAcc }); yAcc += LANE_H
-    if (t.get('autoOpen')) { autoTop[tid] = yAcc; bgRows.push({ tid, kind: 'auto', top: yAcc }); yAcc += LANE_H }
+  for (const r of rows) {
+    trackTop[r.id] = yAcc; bgRows.push({ tid: r.id, kind: 'track', top: yAcc, clips: r.clips }); yAcc += LANE_H
+    if (r.autoOpen) { autoTop[r.id] = yAcc; bgRows.push({ tid: r.id, kind: 'auto', top: yAcc, clips: false }); yAcc += LANE_H }
   }
   const lanesHeight = Math.max(yAcc, LANE_H)
-  const trackTopByIdx = (i: number) => { const t = trackArr[i]; return t ? trackTop[t.get('id') as string] : 0 }
+  const trackTopByIdx = (i: number) => { const r = rows[i]; return r ? trackTop[r.id] : 0 }
   const rowAtY = (y: number) => bgRows.find(r => y >= r.top && y < r.top + LANE_H)
   const trackIdxAtY = (y: number) => {
     const r = rowAtY(y)
-    return r ? trackArr.findIndex(t => t.get('id') === r.tid) : clamp(Math.floor(y / LANE_H), 0, trackArr.length - 1)
+    return r ? rows.findIndex(x => x.id === r.tid) : clamp(Math.floor(y / LANE_H), 0, rows.length - 1)
   }
 
   const loopOn = !!meta.get('loopOn')
@@ -202,8 +227,9 @@ export function ArrangementView() {
         const m = arr.get(it.id) as Y.Map<any> | undefined
         if (!m) continue
         const newStart = Math.max(0, it.origStart + dStart)
-        const newLane = clamp(it.origLane + drag.dLane, 0, trackArr.length - 1)
-        const newTrack = trackArr[newLane]?.get('id') ?? m.get('trackId')
+        // clips only land on clip rows (the first nClipRows); never on a bus/master row
+        const newLane = clamp(it.origLane + drag.dLane, 0, Math.max(0, nClipRows - 1))
+        const newTrack = rows[newLane]?.id ?? m.get('trackId')
         if (drag.copy) {
           const nid = addArrClip(newTrack, newStart, clipToJSON(m), drag.items.length > 1 ? 'Duplicate clips' : 'Duplicate clip')
           if (nid) copies.push(nid)
@@ -253,7 +279,7 @@ export function ArrangementView() {
       if (it) {
         const dStart = Math.max(0, snap(drag.origStart + drag.dx, false)) - drag.origStart
         start = Math.max(0, it.origStart + dStart)
-        laneIdx = clamp(it.origLane + drag.dLane, 0, trackArr.length - 1)
+        laneIdx = clamp(it.origLane + drag.dLane, 0, Math.max(0, nClipRows - 1))
         ghost = true
       }
     }
@@ -310,42 +336,56 @@ export function ArrangementView() {
           <span className="arr-pos">{ticksToBBS(Math.round(engine.arrSeekTicks))}</span>
         </div>
         <div className="arr-heads-inner" ref={headsRef}>
-          {trackArr.map(t => {
-            const tid = t.get('id')
-            const autoOpen = !!t.get('autoOpen')
+          {rows.map(r => {
+            const tid = r.id
+            const isMaster = r.kind === 'master'
+            const autoOpen = r.autoOpen
+            const borderColor = isMaster ? 'var(--accent2)' : CLIP_COLORS[r.color]
+            // dot in the dropdown for any parameter that already holds automation
+            const autoKeys = autoOpen ? new Set(trackAutoKeys(tid)) : new Set<string>()
             return (
               <React.Fragment key={tid}>
-                <div className="arr-head" style={{ height: LANE_H, borderLeftColor: CLIP_COLORS[t.get('color') ?? 0] }}
+                <div className={`arr-head ${isMaster ? 'master' : ''} ${r.kind === 'bus' ? 'bus' : ''}`} style={{ height: LANE_H, borderLeftColor: borderColor }}
                   onClick={() => { setUI({ selTrackId: tid, detailOpen: true, detailTab: 'devices' }) }}
-                  onContextMenu={e => openMenu(e, trackHeaderMenu(tid, () => setRenamingTid(tid), true))}
-                  onDragOver={e => e.preventDefault()}
-                  onDrop={e => { const dk = e.dataTransfer.getData('stg/drumkit'); if (dk) assignKitToTrack(tid, dk) }}
-                  data-info="Click to select & open devices. Right-click for track options. Drop a drum kit here.">
+                  onContextMenu={e => { if (!isMaster) openMenu(e, trackHeaderMenu(tid, () => setRenamingTid(tid), true)) }}
+                  onDragOver={e => { if (r.clips) e.preventDefault() }}
+                  onDrop={e => { if (!r.clips) return; const dk = e.dataTransfer.getData('stg/drumkit'); if (dk) assignKitToTrack(tid, dk) }}
+                  data-info={isMaster ? 'Master bus — click to edit master effects; toggle its automation lane below' : 'Click to select & open devices. Right-click for track options. Drop a drum kit here.'}>
                   <div className="arr-head-top">
-                    {renamingTid === tid
-                      ? <InlineRename value={t.get('name')} onDone={v => { setRenamingTid(null); if (v) renameTrack(tid, v) }} />
-                      : <span className="arr-head-name" onDoubleClick={e => { e.stopPropagation(); setRenamingTid(tid) }}>{t.get('name')}</span>}
-                    <button className={`tbtn mute ${t.get('mute') ? 'on' : ''}`} data-info="Mute track" onClick={e => { e.stopPropagation(); setTrackMix(tid, { mute: !t.get('mute') }) }}>M</button>
-                    <button className={`tbtn solo ${t.get('solo') ? 'on' : ''}`} data-info="Solo track" onClick={e => { e.stopPropagation(); setTrackMix(tid, { solo: !t.get('solo') }) }}>S</button>
+                    {(!isMaster && renamingTid === tid)
+                      ? <InlineRename value={r.name} onDone={v => { setRenamingTid(null); if (v) renameTrack(tid, v) }} />
+                      : <span className="arr-head-name" onDoubleClick={e => { e.stopPropagation(); if (!isMaster) setRenamingTid(tid) }}>{r.name}</span>}
+                    {!isMaster && (
+                      <>
+                        <button className={`tbtn mute ${r.mute ? 'on' : ''}`} data-info="Mute" onClick={e => { e.stopPropagation(); setTrackMix(tid, { mute: !r.mute }) }}>M</button>
+                        <button className={`tbtn solo ${r.solo ? 'on' : ''}`} data-info="Solo" onClick={e => { e.stopPropagation(); setTrackMix(tid, { solo: !r.solo }) }}>S</button>
+                      </>
+                    )}
                   </div>
                   <div className="arr-head-mix" onClick={e => e.stopPropagation()} onDoubleClick={e => e.stopPropagation()}>
-                    <HFader value={t.get('gain') ?? 0} onChange={v => setTrackMix(tid, { gain: v })} />
-                    <Knob spec={PAN_SPEC} value={t.get('pan') ?? 0} onChange={v => setTrackMix(tid, { pan: v })} size={20} />
+                    {isMaster
+                      ? <HFader value={meta.get('masterGain') ?? 0} onChange={v => setMetaField('Master volume', 'masterGain', v)} />
+                      : (
+                        <>
+                          <HFader value={r.track!.get('gain') ?? 0} onChange={v => setTrackMix(tid, { gain: v })} />
+                          <Knob spec={PAN_SPEC} value={r.track!.get('pan') ?? 0} onChange={v => setTrackMix(tid, { pan: v })} size={20} />
+                        </>
+                      )}
                   </div>
                   <button className={`arr-auto-toggle ${autoOpen ? 'on' : ''}`}
-                    data-info="Show/hide this track's automation lane"
+                    data-info="Show/hide this row's automation lane"
                     onClick={e => { e.stopPropagation(); setAutoOpen(tid, !autoOpen) }}>
                     <span className="arr-auto-caret">▸</span> automation
                   </button>
                 </div>
                 {autoOpen && (
-                  <div className="arr-head-auto" style={{ height: LANE_H, borderLeftColor: CLIP_COLORS[t.get('color') ?? 0] }}
+                  <div className={`arr-head-auto ${isMaster ? 'master' : ''}`} style={{ height: LANE_H, borderLeftColor: borderColor }}
                     onClick={e => e.stopPropagation()}>
                     <span className="arr-auto-title">Automation</span>
-                    <select className="auto-select" value={t.get('autoParam') ?? 'mix||gain'}
+                    <select className="auto-select" value={r.autoParam}
                       onChange={e => setAutoParam(tid, e.target.value)}
-                      data-info="Parameter automated by this lane">
-                      {autoTargets(tid).map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
+                      data-info="Parameter automated by this lane · • marks parameters that already have automation">
+                      {autoTargets(tid).map(o => <option key={o.key} value={o.key}>{(autoKeys.has(o.key) ? '• ' : '') + o.label}</option>)}
                     </select>
                   </div>
                 )}
@@ -391,10 +431,10 @@ export function ArrangementView() {
               const y = (e.clientY - rect.top) / z
               if (rowAtY(y)?.kind === 'auto') return   // automation lanes don't make clips
               const idx = trackIdxAtY(y)
-              const tid = trackArr[idx]?.get('id')
-              if (!tid) return
+              const row = rows[idx]
+              if (!row || !row.clips) return   // buses + master hold no clips
               const t = snap((e.clientX - rect.left) / z / pxPerTick, false)
-              const id = addArrClip(tid, Math.max(0, t), { name: 'Clip', color: trackArr[idx].get('color') ?? 0, len: BAR * 4, notes: {} })
+              const id = addArrClip(row.id, Math.max(0, t), { name: 'Clip', color: row.color, len: BAR * 4, notes: {} })
               selectClip({ kind: 'arr', id }, true)
             }}
             onDragOver={e => e.preventDefault()}
@@ -405,7 +445,8 @@ export function ArrangementView() {
               const sample = e.dataTransfer.getData('stg/sample')
               const rect = e.currentTarget.getBoundingClientRect()
               const t = Math.max(0, snap((e.clientX - rect.left) / z / pxPerTick, false))
-              const tid = trackArr[trackIdxAtY((e.clientY - rect.top) / z)]?.get('id')
+              const dropRow = rows[trackIdxAtY((e.clientY - rect.top) / z)]
+              const tid = dropRow?.clips ? dropRow.id : undefined   // only clip rows accept drops
               if (sample && tid) {
                 const [sid, nm] = sample.split('::')
                 addSampleToArr(tid, t, sid, nm || 'Sample')
@@ -433,20 +474,17 @@ export function ArrangementView() {
               }
             }}
           >
-            {bgRows.map((r, i) => <div key={i} className={`lane-bg ${r.kind === 'auto' ? 'auto' : ''}`} style={{ top: r.top, height: LANE_H }} />)}
+            {bgRows.map((r, i) => <div key={i} className={`lane-bg ${r.kind === 'auto' ? 'auto' : ''} ${r.kind === 'track' && !r.clips ? 'summing' : ''}`} style={{ top: r.top, height: LANE_H }} />)}
             {Array.from({ length: totalBars }, (_, i) => (
               <div key={i} className="lane-grid" style={{ left: i * zoom }} />
             ))}
             {clipEls}
-            {trackArr.filter(t => t.get('autoOpen')).map(t => {
-              const tid = t.get('id') as string
-              return (
-                <div key={'auto-' + tid} className="arr-auto-lane" style={{ top: autoTop[tid], height: LANE_H, width }}>
-                  <AutomationLane trackId={tid} paramKey={t.get('autoParam') ?? 'mix||gain'}
-                    width={width} pxPerTick={pxPerTick} height={LANE_H} snapTicks={ui.gridTicks} />
-                </div>
-              )
-            })}
+            {rows.filter(r => r.autoOpen).map(r => (
+              <div key={'auto-' + r.id} className="arr-auto-lane" style={{ top: autoTop[r.id], height: LANE_H, width }}>
+                <AutomationLane trackId={r.id} paramKey={r.autoParam}
+                  width={width} pxPerTick={pxPerTick} height={LANE_H} snapTicks={ui.gridTicks} />
+              </div>
+            ))}
             {drag?.type === 'marquee' && drag.moved && (
               <div className="arr-marquee" style={{
                 left: Math.min(drag.x0, drag.x1), top: Math.min(drag.y0, drag.y1),

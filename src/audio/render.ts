@@ -258,9 +258,23 @@ async function renderBuffer(
     transport.swingSubdivision = '16n'
 
     // The multiband effect (mbcomp) is an AudioWorklet — register its module on
-    // THIS offline context before building tracks so it bounces like it sounds;
-    // otherwise mbcomp falls back to a clean passthrough in the render.
-    try { await (Tone.getContext().rawContext as any).audioWorklet?.addModule('/sf-mbdyn.js') } catch { /* mbcomp bypassed in this bounce */ }
+    // THIS offline context so it bounces like it sounds. ONLY when the bounce
+    // actually uses it: OfflineAudioContext.audioWorklet.addModule() can stall
+    // until startRendering() in some browsers, and Tone.Offline awaits this build
+    // callback *before* it renders — so an unconditional await deadlocks every
+    // export. We also cap it with a timeout; if the module isn't ready, mbcomp
+    // degrades to a clean passthrough (makeEffect handles the missing node).
+    const usesMb = project.tracks.some(t => (t.fx ?? []).some(f => f.on && f.type === 'mbcomp'))
+      || (project.masterFx ?? []).some(f => f.on && f.type === 'mbcomp')
+    if (usesMb) {
+      const raw = Tone.getContext().rawContext as any
+      if (raw?.audioWorklet) {
+        await Promise.race([
+          raw.audioWorklet.addModule('/sf-mbdyn.js').catch(() => {}),
+          new Promise<void>(res => setTimeout(res, 1500)),
+        ])
+      }
+    }
 
     // stereo-preserving master (Tone.Channel would downmix)
     const master = new Tone.Volume(project.meta.masterGain ?? 0)
@@ -314,7 +328,13 @@ async function renderBuffer(
       const midifx = (t.midifx ?? []).map(d => ({ type: d.type, on: d.on, params: d.params }))
       const tid = t.id ?? t.name
 
-      const scheduleClip = (clip: ClipJSON, startTicks: number, lenTicks: number, loop: boolean) => {
+      // The clip's internal pattern always loops (loopEnd = lenTicks). `infinite`
+      // controls whether it runs forever (scene preview) or STOPS at start+len
+      // (arrangement). Arrangement clips MUST be bounded — mirroring the live
+      // buildArrParts — otherwise a clip loops past the bounce window, and its
+      // notes overlap into a synth's envelope out of order ("Time must be greater
+      // than or equal to the last scheduled time"), aborting the whole render.
+      const scheduleClip = (clip: ClipJSON, startTicks: number, lenTicks: number, infinite: boolean) => {
         if (clip.audio) {
           const a = clip.audio
           const raw = getSampleBuffer(a.sampleId || '')
@@ -323,8 +343,7 @@ async function renderBuffer(
           const player = new Tone.Player(clipAudioBuffer(a.sampleId || '', raw, a.offset, a.dur, !!a.loop, a.xfade) as any)
           configureAudioPlayer(player, a)
           Tone.connect(player, ot.inst.out)
-          player.sync().start(`${startTicks}i`)
-          if (!loop) player.stop(`${startTicks + lenTicks}i`)
+          try { const s = player.sync().start(`${startTicks}i`); if (!infinite) s.stop(`${startTicks + lenTicks}i`) } catch { /* ok */ }
           return
         }
         let notes: Note[] = Object.values(clip.notes).map(n => ({ ...n }))
@@ -334,11 +353,12 @@ async function renderBuffer(
           if (ev.pr < 1 && Math.random() > ev.pr) return
           ot.inst.trigger(ev.p, Math.max(0.02, Tone.Ticks(ev.d).toSeconds()), time, ev.v)
         }, events as any)
-        part.loop = loop
+        part.loop = true
         part.loopStart = 0
         part.loopEnd = `${lenTicks}i`
-        part.start(`${startTicks}i`)
-        if (!loop) part.stop(`${startTicks + lenTicks}i`)
+        // never let one clip's scheduling abort the whole bounce (matches the
+        // live engine's defensive try/catch around clip parts)
+        try { part.start(`${startTicks}i`); if (!infinite) part.stop(`${startTicks + lenTicks}i`) } catch { /* ok */ }
       }
 
       if (scope.kind === 'scene') {
@@ -351,7 +371,7 @@ async function renderBuffer(
       } else {
         Object.values(project.arr).forEach(a => {
           if (a.trackId !== tid) return
-          scheduleClip(a, a.start, a.len, true)
+          scheduleClip(a, a.start, a.len, false)   // bounded: play once across [start, start+len)
         })
       }
     })

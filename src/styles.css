@@ -305,6 +305,10 @@ button { cursor: pointer; background: none; border: none; }
 .arr-pos { font-variant-numeric: tabular-nums; font-size: 11px; color: var(--accent); }
 .arr-head { box-sizing: border-box; display: flex; flex-direction: column; justify-content: space-between; gap: 4px; padding: 5px 8px; border-bottom: 1px solid var(--border); border-left: 3px solid; cursor: pointer; background: var(--bg1); }
 .arr-head:hover { background: var(--bg2); }
+/* Bus + master rows hold no clips — tint their heads so they read as summing rows */
+.arr-head.bus { background: color-mix(in srgb, var(--accent2) 6%, var(--bg1)); }
+.arr-head.master { background: color-mix(in srgb, var(--accent2) 12%, var(--bg1)); }
+.arr-head.master .arr-head-name { color: var(--accent2); }
 .arr-head-top { display: flex; align-items: center; gap: 6px; }
 .arr-head-mix { display: flex; align-items: center; gap: 7px; }
 .arr-head-name { flex: 1; font-weight: 600; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -318,6 +322,7 @@ button { cursor: pointer; background: none; border: none; }
 .arr-head-auto .auto-select { max-width: 100%; width: 100%; }
 /* automation lane (timeline side) */
 .lane-bg.auto { background: color-mix(in srgb, var(--text) 5%, transparent); }
+.lane-bg.summing { background: color-mix(in srgb, var(--accent2) 5%, transparent); }
 .arr-auto-lane { position: absolute; left: 0; }
 .auto-svg { display: block; }
 .auto-line { fill: none; stroke: var(--accent); stroke-width: 1.6; }
