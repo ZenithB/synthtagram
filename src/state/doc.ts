@@ -255,11 +255,26 @@ function applyClipExtras(m: Y.Map<any>, json: ClipJSON) {
 }
 
 // ---------- lookups ----------
+// id → track map, rebuilt lazily and dropped on any membership change.
+// trackById is called from hot paths (the engine's per-frame modulation loop,
+// mute/solo, bus rewires) where the old linear scan multiplied with track count.
+let trackIdCache: Map<string, Y.Map<any>> | null = null
+tracks.observe(() => { trackIdCache = null })
 export function trackById(trackId: string): Y.Map<any> | undefined {
+  if (!trackIdCache) {
+    trackIdCache = new Map()
+    for (let i = 0; i < tracks.length; i++) trackIdCache.set(tracks.get(i).get('id'), tracks.get(i))
+  }
+  const hit = trackIdCache.get(trackId)
+  // Verify the hit is still attached: inside an uncommitted transaction the
+  // observer hasn't fired yet, so a just-deleted map could still be cached
+  // (e.g. moveTrack deletes + reinserts the same id in one transaction).
+  if (hit && !(hit as any)._item?.deleted) return hit
   for (let i = 0; i < tracks.length; i++) {
     const t = tracks.get(i)
-    if (t.get('id') === trackId) return t
+    if (t.get('id') === trackId) { trackIdCache.set(trackId, t); return t }
   }
+  if (hit) trackIdCache.delete(trackId)
   return undefined
 }
 export function trackIndex(trackId: string) {

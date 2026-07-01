@@ -12,7 +12,7 @@ import {
 } from '../state/doc'
 import { engine } from '../audio/engine'
 import { setUI, ui, useUI, toast } from '../state/store'
-import { useY, useRaf } from './hooks'
+import { useY, useYShallow, useRaf } from './hooks'
 import { Fader, MeterBar, Knob, openMenu, ColorRow, MenuItem, InlineRename } from './widgets'
 import { peersList, subscribeAwareness, awarenessVersion, setPresence } from '../state/net'
 import { Icon } from './icons'
@@ -118,6 +118,10 @@ function ClipSlot({ track, sceneId }: { track: Y.Map<any>; sceneId: string }) {
   const trackId = track.get('id') as string
   const key = clipKey(trackId, sceneId)
   const cm = clips.get(key) as Y.Map<any> | undefined
+  // Each slot follows its own clip's direct keys (name/color/len). Note edits
+  // live in the nested `notes` map and stay invisible here — the grid observes
+  // `clips` shallowly, so a velocity drag no longer re-renders every slot.
+  useYShallow(cm ?? null)
   const st = engine.clipState(trackId, sceneId)
   const isSel = useUI(s => !!(s.selClip && s.selClip.kind === 'session' && s.selClip.trackId === trackId && s.selClip.sceneId === sceneId))
   const [renaming, setRenaming] = useState(false)
@@ -317,7 +321,9 @@ function SceneCell({ scene, index }: { scene: Y.Map<any>; index: number }) {
 export function SessionView() {
   useY(tracks)
   useY(scenes)
-  useY(clips)
+  // Shallow: slot creation/deletion only. Content edits (notes, envelopes)
+  // re-render the individual ClipSlot via its own shallow subscription.
+  useYShallow(clips)
   useY(meta)
   useEngineTick()
   const masterSel = useUI(s => s.selTrackId === 'master')

@@ -34,12 +34,17 @@ export function setPresence(patch: Partial<PresenceState>) {
   awareness.setLocalState({ ...cur, ...patch })
 }
 
+// Memoized per awareness change — every ClipSlot asks for this on render, so
+// rebuilding + sorting it each call multiplies across the session grid.
+let peersCache: { id: number; me: boolean; state: PresenceState }[] | null = null
 export function peersList(): { id: number; me: boolean; state: PresenceState }[] {
+  if (peersCache) return peersCache
   const out: { id: number; me: boolean; state: PresenceState }[] = []
   awareness.getStates().forEach((state, id) => {
     if (state && (state as any).name) out.push({ id, me: id === doc.clientID, state: state as PresenceState })
   })
   out.sort((a, b) => (a.me ? -1 : b.me ? 1 : a.id - b.id))
+  peersCache = out
   return out
 }
 
@@ -52,6 +57,7 @@ let awVersion = 0
 const awListeners = new Set<() => void>()
 awareness.on('change', () => {
   awVersion++
+  peersCache = null
   refreshPeerCount()
   awListeners.forEach(l => l())
 })

@@ -11,7 +11,7 @@ import {
   envPoints, setEnvPoints, followOf, setFollow,
 } from '../state/doc'
 import { setUI, ui, useUI, toast } from '../state/store'
-import { useY } from './hooks'
+import { useY, subscribeFrame } from './hooks'
 import { openMenu, ColorRow } from './widgets'
 import { inScale, snapToScale, midiName, getScale } from '../theory'
 import { instSchema, fxSchema, mixSpec, FOLLOW_ACTIONS } from '../audio/schema'
@@ -101,6 +101,13 @@ export function PianoRoll() {
   const autoPaint = useRef<Map<number, number> | null>(null)
   const autoMode = !!autoTarget
 
+  // Dirty flag for the canvas painter: the rAF loop only repaints when
+  // something could have changed. Every React render marks it (useY re-renders
+  // on clip edits, bump() on selection changes); scroll/zoom/pointer handlers
+  // and a ResizeObserver mark it directly since they bypass React.
+  const needsDraw = useRef(true)
+  needsDraw.current = true
+
   // reset selection when switching clips
   const clipIdRef = useRef<string | null>(null)
   const clipId = clipMap?.get('id') ?? null
@@ -148,12 +155,29 @@ export function PianoRoll() {
 
   // ---------------- drawing ----------------
   useEffect(() => {
-    let raf = 0
+    // Resolve the theme palette ONCE per effect run (theme is a dep), not per
+    // frame — the old per-frame getComputedStyle + getPropertyValue per row/
+    // grid-line/note was hundreds of style-engine calls every frame.
+    const css = getComputedStyle(document.documentElement)
+    const C = (v: string) => css.getPropertyValue(v).trim()
+    const pal = {
+      bg0: C('--bg0'), bg1: C('--bg1'), bg2: C('--bg2'),
+      rowRoot: C('--rowRoot'), rowIn: C('--rowIn'), rowBlack: C('--rowBlack'), rowOut: C('--rowOut'),
+      gridBar: C('--gridBar'), gridBeat: C('--gridBeat'), gridSub: C('--gridSub'),
+      text: C('--text'), dim: C('--dim'), accent: C('--accent'), accent2: C('--accent2'),
+      playhead: C('--playhead'), keyBlack: C('--keyBlack'), keyWhite: C('--keyWhite'), keyText: C('--keyText'),
+    }
+    let wasPlaying = false
     const draw = () => {
-      raf = requestAnimationFrame(draw)
       const canvas = canvasRef.current
       const box = boxRef.current
       if (!canvas || !box || !clipMap) return
+      // Repaint only when something can have changed: data/view edits mark the
+      // dirty flag, dragging and playback animate continuously, and one extra
+      // frame after playback stops erases the playhead.
+      if (!needsDraw.current && !dragRef.current && !engine.playing && !wasPlaying) return
+      wasPlaying = engine.playing
+      needsDraw.current = false
       const dpr = window.devicePixelRatio || 1
       const W = box.clientWidth
       const H = box.clientHeight
@@ -165,14 +189,12 @@ export function PianoRoll() {
       }
       const ctx = canvas.getContext('2d')!
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-      const css = getComputedStyle(document.documentElement)
-      const C = (v: string) => css.getPropertyValue(v).trim()
       const len = clipMap.get('len') ?? BAR
       const pxPerTick = view.current.pxPerBar / BAR
       const { scrollX, scrollY } = view.current
       const gridH = H - LANE_H
 
-      ctx.fillStyle = C('--bg0')
+      ctx.fillStyle = pal.bg0
       ctx.fillRect(0, 0, W, H)
 
       // rows
@@ -183,7 +205,7 @@ export function PianoRoll() {
         const inSc = isDrum || inScale(p, root, scaleId)
         const isRoot = !isDrum && ((p - root) % 12 + 12) % 12 === 0
         const black = !isDrum && [1, 3, 6, 8, 10].includes(p % 12)
-        ctx.fillStyle = isRoot ? C('--rowRoot') : inSc ? C('--rowIn') : black ? C('--rowBlack') : C('--rowOut')
+        ctx.fillStyle = isRoot ? pal.rowRoot : inSc ? pal.rowIn : black ? pal.rowBlack : pal.rowOut
         ctx.fillRect(KEY_W, y, W - KEY_W, rowH - 0.5)
       }
 
@@ -194,7 +216,7 @@ export function PianoRoll() {
         if (x < KEY_W - 1 || x > W) continue
         const isBar = t % BAR === 0
         const isBeat = t % (BAR / 4) === 0
-        ctx.strokeStyle = isBar ? C('--gridBar') : isBeat ? C('--gridBeat') : C('--gridSub')
+        ctx.strokeStyle = isBar ? pal.gridBar : isBeat ? pal.gridBeat : pal.gridSub
         ctx.beginPath()
         ctx.moveTo(x, 0)
         ctx.lineTo(x, gridH)
@@ -238,7 +260,7 @@ export function PianoRoll() {
           ctx.setLineDash([])
         }
         if (sel.current.has(id)) {
-          ctx.strokeStyle = C('--text')
+          ctx.strokeStyle = pal.text
           ctx.lineWidth = 1.5
           ctx.strokeRect(x + 0.75, y + 0.75, w - 1.5, h - 1.5)
           ctx.lineWidth = 1
@@ -255,7 +277,7 @@ export function PianoRoll() {
 
       // marquee
       if (d && d.type === 'marquee') {
-        ctx.strokeStyle = C('--accent')
+        ctx.strokeStyle = pal.accent
         ctx.fillStyle = 'rgba(255,176,46,0.12)'
         const x = Math.min(d.x0, d.x1)
         const y = Math.min(d.y0, d.y1)
@@ -280,7 +302,7 @@ export function PianoRoll() {
       }
       if (phTicks !== null) {
         const x = KEY_W + phTicks * pxPerTick - scrollX
-        ctx.strokeStyle = C('--playhead')
+        ctx.strokeStyle = pal.playhead
         ctx.lineWidth = 2
         ctx.beginPath()
         ctx.moveTo(x, 0)
@@ -290,26 +312,26 @@ export function PianoRoll() {
       }
 
       // velocity / chance lane
-      ctx.fillStyle = C('--bg1')
+      ctx.fillStyle = pal.bg1
       ctx.fillRect(0, gridH, W, LANE_H)
-      ctx.strokeStyle = C('--gridBar')
+      ctx.strokeStyle = pal.gridBar
       ctx.beginPath()
       ctx.moveTo(0, gridH + 0.5)
       ctx.lineTo(W, gridH + 0.5)
       ctx.stroke()
-      ctx.fillStyle = C('--dim')
+      ctx.fillStyle = pal.dim
       ctx.font = '9px sans-serif'
       const laneY = (v: number) => gridH + (LANE_H - 4) - v * (LANE_H - 14)
       if (autoMode) {
-        ctx.fillStyle = C('--accent2')
+        ctx.fillStyle = pal.accent2
         ctx.fillText(`AUTO · ${autoTargetLabel}`, 6, gridH + 12)
         // build the curve from the live paint map (if painting) or the stored env
         const src = autoPaint.current
           ? [...autoPaint.current.entries()].map(([t, v]) => ({ t, v })).sort((a, b) => a.t - b.t)
           : envPoints(clipMap, autoTarget!)
         if (src.length) {
-          ctx.strokeStyle = C('--accent2')
-          ctx.fillStyle = 'color-mix(in srgb, var(--accent2) 18%, transparent)'
+          ctx.strokeStyle = pal.accent2
+          ctx.fillStyle = `color-mix(in srgb, ${pal.accent2} 18%, transparent)`
           ctx.lineWidth = 1.5
           ctx.beginPath()
           src.forEach((p, i) => {
@@ -343,42 +365,49 @@ export function PianoRoll() {
       }
 
       // piano keys column (over rows)
-      ctx.fillStyle = C('--bg1')
+      ctx.fillStyle = pal.bg1
       ctx.fillRect(0, 0, KEY_W, gridH)
       for (let r = 0; r < pitches.length; r++) {
         const y = r * rowH - scrollY
         if (y + rowH < 0 || y > gridH) continue
         const p = pitches[r]
         if (isDrum) {
-          ctx.fillStyle = C('--bg2')
+          ctx.fillStyle = pal.bg2
           ctx.fillRect(0, y, KEY_W - 1, rowH - 1)
-          ctx.fillStyle = C('--text')
+          ctx.fillStyle = pal.text
           ctx.font = '9px sans-serif'
           ctx.fillText(DRUM_PADS[p], 4, y + rowH / 2 + 3)
         } else {
           const black = [1, 3, 6, 8, 10].includes(p % 12)
-          ctx.fillStyle = black ? C('--keyBlack') : C('--keyWhite')
+          ctx.fillStyle = black ? pal.keyBlack : pal.keyWhite
           ctx.fillRect(0, y, KEY_W - 1, rowH - 0.5)
           if (p % 12 === 0) {
-            ctx.fillStyle = black ? '#fff' : C('--keyText')
+            ctx.fillStyle = black ? '#fff' : pal.keyText
             ctx.font = '9px sans-serif'
             ctx.fillText(midiName(p), 4, y + rowH - 3)
           }
         }
       }
-      ctx.strokeStyle = C('--gridBar')
+      ctx.strokeStyle = pal.gridBar
       ctx.beginPath()
       ctx.moveTo(KEY_W - 0.5, 0)
       ctx.lineTo(KEY_W - 0.5, gridH)
       ctx.stroke()
     }
-    raf = requestAnimationFrame(draw)
-    return () => cancelAnimationFrame(raf)
+    needsDraw.current = true
+    const unsub = subscribeFrame(draw)
+    // panel resizes (detail-height drag, window resize) bypass React — repaint
+    const ro = new ResizeObserver(() => { needsDraw.current = true })
+    if (boxRef.current) ro.observe(boxRef.current)
+    return () => { unsub(); ro.disconnect() }
   }, [clipMap, gridTicks, lane, fold, isDrum, trackColor, root, scaleId, theme, selClip, autoTarget, autoTargetLabel])
 
   // ---------------- interactions ----------------
 
-  const locate = (e: React.PointerEvent | React.MouseEvent) => {
+  // Only the pointer coordinates are needed — lets throttled handlers stash a
+  // tiny {clientX, clientY} instead of retaining the whole event.
+  type Pt = { clientX: number; clientY: number }
+  const locate = (e: Pt) => {
     const rect = canvasRef.current!.getBoundingClientRect()
     // getBoundingClientRect/clientX are in the zoomed (visual) space; the canvas
     // draws in layout px. Divide by the UI zoom to map a click to the grid.
@@ -417,6 +446,7 @@ export function PianoRoll() {
 
   const onPointerDown = (e: React.PointerEvent) => {
     if (!clipMap || e.button === 2) return
+    needsDraw.current = true
     const loc = locate(e)
     try { (e.target as HTMLElement).setPointerCapture(e.pointerId) } catch { /* synthetic */ }
 
@@ -474,7 +504,7 @@ export function PianoRoll() {
     }
   }
 
-  const paintAuto = (e: React.PointerEvent) => {
+  const paintAuto = (e: { clientX: number; clientY: number }) => {
     if (!clipMap || !autoPaint.current) return
     const loc = locate(e)
     const H = boxRef.current!.clientHeight
@@ -485,7 +515,7 @@ export function PianoRoll() {
     bump()
   }
 
-  const laneDrag = (e: React.PointerEvent) => {
+  const laneDrag = (e: { clientX: number; clientY: number }) => {
     if (!clipMap) return
     if (autoMode && autoPaint.current) { paintAuto(e); return }
     const loc = locate(e)
@@ -502,6 +532,28 @@ export function PianoRoll() {
     const targets = sel.current.has(best[0]) ? [...sel.current] : [best[0]]
     const patch: Partial<Note> = lane === 'vel' ? { v: val } : { pr: Math.round(val * 20) / 20 }
     updateNotes(clipMap, targets.map(id => [id, patch]), lane === 'vel' ? 'Edit velocity' : 'Edit chance')
+  }
+
+  // Lane drags write to the doc (a labeled Yjs transaction that fans out to
+  // undo, engine observers and the P2P mesh) — coalesce pointer events to one
+  // write per frame, flushing the final position on release.
+  const laneRafId = useRef(0)
+  const lanePending = useRef<{ clientX: number; clientY: number } | null>(null)
+  const laneDragThrottled = (e: React.PointerEvent) => {
+    lanePending.current = { clientX: e.clientX, clientY: e.clientY }
+    if (laneRafId.current) return
+    laneRafId.current = requestAnimationFrame(() => {
+      laneRafId.current = 0
+      const p = lanePending.current
+      lanePending.current = null
+      if (p && canvasRef.current) laneDrag(p)
+    })
+  }
+  const flushLaneDrag = () => {
+    if (laneRafId.current) { cancelAnimationFrame(laneRafId.current); laneRafId.current = 0 }
+    const p = lanePending.current
+    lanePending.current = null
+    if (p && canvasRef.current) laneDrag(p)
   }
 
   const onPointerMove = (e: React.PointerEvent) => {
@@ -542,13 +594,15 @@ export function PianoRoll() {
         addAt(loc.tick, loc.pitch)
       }
     } else if (d.type === 'lane') {
-      laneDrag(e)
+      laneDragThrottled(e)
     }
   }
 
   const onPointerUp = (e: React.PointerEvent) => {
     const d = dragRef.current
     dragRef.current = null
+    needsDraw.current = true
+    if (d?.type === 'lane') flushLaneDrag()
     if (!d || !clipMap) return
     if (d.type === 'lane' && autoMode && autoPaint.current) {
       const pts = [...autoPaint.current.entries()].map(([t, v]) => ({ t, v }))
@@ -689,6 +743,7 @@ export function PianoRoll() {
 
   const onWheel = (e: React.WheelEvent) => {
     e.preventDefault()
+    needsDraw.current = true
     if (e.ctrlKey || e.metaKey) {
       view.current.pxPerBar = clamp(view.current.pxPerBar * (e.deltaY > 0 ? 0.86 : 1.16), 40, 600)
     } else if (e.shiftKey) {

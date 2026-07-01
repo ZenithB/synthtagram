@@ -20,13 +20,29 @@ export function capturePointer(e: React.PointerEvent) {
  * to the cursor. Returns nothing; the caller wires onMove/onEnd.
  */
 export function beginVDrag(onMove: (e: PointerEvent) => void, onEnd?: () => void) {
-  const move = (e: PointerEvent) => onMove(e)
+  // Coalesce move events to one onMove per animation frame. Pointer events can
+  // fire at 120–250Hz; every onMove here is typically a doc mutation that fans
+  // out to undo history, engine observers and the P2P mesh — anything faster
+  // than the display refresh is pure waste. The final position always flushes
+  // on release so the committed value never lags the cursor.
+  let raf = 0
+  let pending: PointerEvent | null = null
+  const flush = () => {
+    raf = 0
+    if (pending) { const e = pending; pending = null; onMove(e) }
+  }
+  const move = (e: PointerEvent) => {
+    pending = e
+    if (!raf) raf = requestAnimationFrame(flush)
+  }
   const end = () => {
     window.removeEventListener('pointermove', move)
     window.removeEventListener('pointerup', end)
     window.removeEventListener('pointercancel', end)
     window.removeEventListener('blur', end)
     document.removeEventListener('visibilitychange', onHidden)
+    if (raf) cancelAnimationFrame(raf)
+    flush()
     onEnd?.()
   }
   const onHidden = () => { if (document.hidden) end() }
@@ -155,6 +171,8 @@ export function HFader({ value, min = -48, max = 6, onChange, width = 100 }: {
 
 export function MeterBar({ getDb, height = 76 }: { getDb: () => number; height?: number }) {
   const ref = useRef<HTMLDivElement>(null)
+  // 30Hz: the meter signal is already smoothed, and each poll reads an analyser
+  // buffer — with one meter per track that adds up.
   useRaf(() => {
     const db = getDb()
     const norm = clamp((db + 60) / 66, 0, 1)
@@ -162,7 +180,7 @@ export function MeterBar({ getDb, height = 76 }: { getDb: () => number; height?:
       ref.current.style.height = `${norm * 100}%`
       ref.current.style.background = db > -3 ? 'var(--danger)' : db > -10 ? 'var(--warn)' : 'var(--ok)'
     }
-  })
+  }, true, 2)
   return (
     <div className="meter" style={{ height }}>
       <div ref={ref} className="meter-fill" />

@@ -478,6 +478,20 @@ class OptoComp extends Tone.ToneAudioNode {
   dispose() { super.dispose(); this.input.dispose(); this.output.dispose(); return this }
 }
 
+// Gate an effect's internal LFO. Chorus/AutoFilter/Tremolo/AutoPanner run a
+// source oscillator forever once .start()ed — even at wet 0 or depth 0, where
+// the modulation is inaudible (a stopped Tone.LFO rests at its mid value, which
+// at depth≈0 equals the unmodulated setting). Start it only while it matters.
+const LFO_EPS = 0.001
+function lfoGate(node: { start: () => any; stop: () => any }) {
+  let running = false
+  return (want: boolean) => {
+    if (want === running) return
+    running = want
+    try { want ? node.start() : node.stop() } catch { /* ok */ }
+  }
+}
+
 export function makeEffect(type: string, p: Record<string, number>): Fx {
   switch (type) {
     case 'eq': {
@@ -531,13 +545,17 @@ export function makeEffect(type: string, p: Record<string, number>): Fx {
       }
     }
     case 'chorus': {
-      const node = new Tone.Chorus({ frequency: p.rate, delayTime: 3, depth: p.depth, wet: p.mix }).start()
+      const node = new Tone.Chorus({ frequency: p.rate, delayTime: 3, depth: p.depth, wet: p.mix })
+      let depth = p.depth ?? 0, mix = p.mix ?? 0
+      const gate = lfoGate(node)
+      gate(depth > LFO_EPS && mix > LFO_EPS)
       return {
         node,
         set: (k, v) => {
           if (k === 'rate') node.frequency.value = v
-          else if (k === 'depth') node.depth = v
-          else node.wet.value = v
+          else if (k === 'depth') { depth = v; node.depth = v }
+          else { mix = v; node.wet.value = v }
+          gate(depth > LFO_EPS && mix > LFO_EPS)
         },
         dispose: () => node.dispose(),
       }
@@ -644,37 +662,49 @@ export function makeEffect(type: string, p: Record<string, number>): Fx {
       }
     }
     case 'autofilt': {
-      const node = new Tone.AutoFilter({ frequency: p.rate, depth: p.depth, baseFrequency: p.base, wet: p.mix, octaves: 3.5 }).start()
+      const node = new Tone.AutoFilter({ frequency: p.rate, depth: p.depth, baseFrequency: p.base, wet: p.mix, octaves: 3.5 })
+      let depth = p.depth ?? 0, mix = p.mix ?? 0
+      const gate = lfoGate(node)
+      gate(depth > LFO_EPS && mix > LFO_EPS)
       return {
         node,
         set: (k, v) => {
           if (k === 'rate') node.frequency.value = v
-          else if (k === 'depth') node.depth.value = v
+          else if (k === 'depth') { depth = v; node.depth.value = v }
           else if (k === 'base') node.baseFrequency = v
-          else node.wet.value = v
+          else { mix = v; node.wet.value = v }
+          gate(depth > LFO_EPS && mix > LFO_EPS)
         },
         dispose: () => node.dispose(),
       }
     }
     case 'trem': {
-      const node = new Tone.Tremolo({ frequency: p.rate, depth: p.depth, wet: p.mix, spread: 60 }).start()
+      const node = new Tone.Tremolo({ frequency: p.rate, depth: p.depth, wet: p.mix, spread: 60 })
+      let depth = p.depth ?? 0, mix = p.mix ?? 0
+      const gate = lfoGate(node)
+      gate(depth > LFO_EPS && mix > LFO_EPS)
       return {
         node,
         set: (k, v) => {
           if (k === 'rate') node.frequency.value = v
-          else if (k === 'depth') node.depth.value = v
-          else node.wet.value = v
+          else if (k === 'depth') { depth = v; node.depth.value = v }
+          else { mix = v; node.wet.value = v }
+          gate(depth > LFO_EPS && mix > LFO_EPS)
         },
         dispose: () => node.dispose(),
       }
     }
     case 'autopan': {
-      const node = new Tone.AutoPanner({ frequency: p.rate, depth: p.depth }).start()
+      const node = new Tone.AutoPanner({ frequency: p.rate, depth: p.depth })
+      let depth = p.depth ?? 0
+      const gate = lfoGate(node)
+      gate(depth > LFO_EPS)
       return {
         node,
         set: (k, v) => {
           if (k === 'rate') node.frequency.value = v
-          else node.depth.value = v
+          else { depth = v; node.depth.value = v }
+          gate(depth > LFO_EPS)
         },
         dispose: () => node.dispose(),
       }

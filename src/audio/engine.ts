@@ -51,6 +51,14 @@ type BuiltTrack = {
 
 type BuiltReturn = { id: string; fx: Fx; channel: Tone.Volume }
 
+// Plain-JS snapshot of an LFO's config — read every frame by the modulation
+// loop, so we deserialize the Y.Map once per change instead of per frame.
+type LfoCfg = {
+  id: string; on: boolean; shape: number; sync: boolean; rate: number
+  hz: number; depth: number; phase: number; dest: string; fxId: string; pkey: string
+}
+type EnvPts = { t: number; v: number }[]
+
 class Engine {
   started = false
   mode: 'session' | 'arr' = 'session'
@@ -85,6 +93,89 @@ class Engine {
   private lfoVals = new Map<string, number>()  // lfoId -> current raw value [-1,1]
   private activeMod = new Map<string, { tid: string; dest: string; fxId: string; pkey: string }>()
 
+  // ---- per-frame lookup caches ----
+  // The modulation loop runs every animation frame; everything it needs from
+  // the Yjs doc (track list, LFO configs, envelope/automation breakpoints,
+  // resolved param targets, the arrangement clip index) changes only on edits,
+  // so it's deserialized once and invalidated from the existing observers /
+  // recompute points instead of being re-derived 60× a second.
+  private tracksCache: Y.Map<any>[] | null = null
+  private lfoCfgCache = new Map<string, LfoCfg[]>()
+  private resolveCache = new Map<string, { spec: ParamSpec; base: number; setter: (v: number) => void } | null>()
+  private clipEnvCache = new Map<Y.Map<any>, [string, EnvPts][]>()
+  private trackAutoCache = new Map<string, [string, EnvPts][]>()
+  private arrIndexCache: { cm: Y.Map<any>; trackId: string; start: number; len: number }[] | null = null
+  private masterAutoCache: [string, EnvPts][] | null = null
+
+  private allTracks(): Y.Map<any>[] {
+    if (!this.tracksCache) this.tracksCache = tracks.toArray()
+    return this.tracksCache
+  }
+  private lfoCfgsOf(tid: string, t: Y.Map<any>): LfoCfg[] {
+    let cfgs = this.lfoCfgCache.get(tid)
+    if (!cfgs) {
+      const list: LfoCfg[] = []
+      ;(t.get('lfos') as Y.Array<Y.Map<any>> | undefined)?.forEach(l => list.push({
+        id: l.get('id'), on: !!l.get('on'), shape: l.get('shape') | 0, sync: !!l.get('sync'),
+        rate: l.get('rate') | 0, hz: l.get('hz') ?? 1, depth: l.get('depth') ?? 0.5, phase: l.get('phase') ?? 0,
+        dest: (l.get('dest') as string) || '', fxId: (l.get('fxId') as string) || '', pkey: (l.get('pkey') as string) || '',
+      }))
+      cfgs = list
+      this.lfoCfgCache.set(tid, cfgs)
+    }
+    return cfgs
+  }
+  private envEntriesOf(cm: Y.Map<any>): [string, EnvPts][] {
+    let e = this.clipEnvCache.get(cm)
+    if (!e) {
+      e = envKeys(cm).map(k => [k, envPoints(cm, k)] as [string, EnvPts])
+      this.clipEnvCache.set(cm, e)
+    }
+    return e
+  }
+  private autoEntriesOf(tid: string, t: Y.Map<any>): [string, EnvPts][] {
+    let e = this.trackAutoCache.get(tid)
+    if (!e) {
+      const list: [string, EnvPts][] = []
+      ;(t.get('auto') as Y.Map<any> | undefined)?.forEach((a, k) => list.push([k, (a as Y.Array<any>).toArray()]))
+      e = list
+      this.trackAutoCache.set(tid, e)
+    }
+    return e
+  }
+  private arrIndex() {
+    if (!this.arrIndexCache) {
+      const idx: { cm: Y.Map<any>; trackId: string; start: number; len: number }[] = []
+      arr.forEach((cm: Y.Map<any>) => idx.push({ cm, trackId: cm.get('trackId'), start: cm.get('start') ?? 0, len: cm.get('len') ?? BAR }))
+      this.arrIndexCache = idx
+    }
+    return this.arrIndexCache
+  }
+  private masterAutoEntries(): [string, EnvPts][] {
+    if (!this.masterAutoCache) {
+      const list: [string, EnvPts][] = []
+      masterAuto.forEach((a: Y.Array<any>, k: string) => list.push([k, a.toArray()]))
+      this.masterAutoCache = list
+    }
+    return this.masterAutoCache
+  }
+  private resolveCached(t: Y.Map<any>, rec: BuiltTrack, tid: string, k: string, dest: string, fxId: string, pkey: string) {
+    let r = this.resolveCache.get(tid + '|' + k)
+    if (r === undefined) {
+      r = this.resolveTarget(t, rec, dest, fxId, pkey)
+      this.resolveCache.set(tid + '|' + k, r)
+    }
+    return r
+  }
+  private resolveMasterCached(k: string) {
+    let r = this.resolveCache.get('master|' + k)
+    if (r === undefined) {
+      r = this.resolveMasterTarget(k)
+      this.resolveCache.set('master|' + k, r)
+    }
+    return r
+  }
+
   // ---- send/return buses + master analysers ----
   private builtReturns: BuiltReturn[] = []
   private masterFFT!: Tone.Analyser
@@ -104,6 +195,9 @@ class Engine {
   }
   private emit() {
     this.version++
+    // launch/stop transitions change which clips' envelopes can drive sends —
+    // refresh the idle-bus cut on every engine-state change (cheap, event-driven)
+    this.recomputeBusIdle()
     this.listeners.forEach(l => l())
   }
 
@@ -375,6 +469,8 @@ class Engine {
     await this.ensureMbWorklet()
     this.buildAll()
     tracks.observeDeep(this.onTracksDeep)
+    tracks.observe(() => { this.tracksCache = null })          // membership → drop cached list
+    masterAuto.observeDeep(() => { this.masterAutoCache = null })
     clips.observe(this.onClipsShallow)
     arr.observeDeep(this.onArrDeep)
     meta.observe(this.onMeta)
@@ -390,9 +486,13 @@ class Engine {
   // — same model as playback. Restores the base value when a mapping is removed.
 
   private startModLoop() {
+    let frame = 0
     const tick = () => {
       this.modRAF = requestAnimationFrame(tick)
-      try { this.applyModulation() } catch { /* never kill the loop */ }
+      try {
+        this.applyModulation()
+        if ((++frame & 127) === 0) this.sweepMeters()   // ~every 2s
+      } catch { /* never kill the loop */ }
     }
     this.modRAF = requestAnimationFrame(tick)
   }
@@ -447,15 +547,35 @@ class Engine {
     const newActive = new Map<string, { tid: string; dest: string; fxId: string; pkey: string }>()
     const syncedPos = playing ? this.transport.ticks : this.freeTicks()
     const audioTime = Tone.now()
+    const bpm = this.transport.bpm.value
+    const tick = this.transport.ticks
+    const isArr = playing && this.mode === 'arr'
 
-    for (const t of tracks.toArray()) {
+    // ARRANGEMENT: one pass over the cached clip index finds the clips under
+    // the playhead per track — the old code re-walked EVERY arr clip once per
+    // track per frame (O(tracks × clips) Yjs reads at 60Hz).
+    let activeArr: Map<string, { cm: Y.Map<any>; pos: number; loop: number }[]> | null = null
+    if (isArr) {
+      activeArr = new Map()
+      for (const c of this.arrIndex()) {
+        if (tick < c.start || tick >= c.start + c.len) continue
+        const loop = c.len || BAR
+        const entry = { cm: c.cm, pos: (((tick - c.start) % loop) + loop) % loop, loop }
+        const list = activeArr.get(c.trackId)
+        if (list) list.push(entry)
+        else activeArr.set(c.trackId, [entry])
+      }
+    }
+
+    for (const t of this.allTracks()) {
       const tid = t.get('id') as string
       const rec = this.built.get(tid)
       if (!rec) continue
 
       // tempo-synced effect ticks (sidechain ducker, etc.)
-      const bpm = this.transport.bpm.value
-      rec.fx.forEach(bf => bf.fx.tick?.(syncedPos, playing, bpm))
+      for (const bf of rec.fx) bf.fx.tick?.(syncedPos, playing, bpm)
+
+      const lfos = this.lfoCfgsOf(tid, t)
 
       const controlled = new Map<string, { dest: string; fxId: string; pkey: string }>()
       const autoNorm = new Map<string, number>()
@@ -467,66 +587,51 @@ class Engine {
         const clipMap = clips.get(rec.partKey) as Y.Map<any> | undefined
         if (clipMap) {
           const loop = rec.partLoopTicks || BAR
-          const pos = (((this.transport.ticks - rec.partStartTicks) % loop) + loop) % loop
-          for (const k of envKeys(clipMap)) {
-            const pts = envPoints(clipMap, k)
+          const pos = (((tick - rec.partStartTicks) % loop) + loop) % loop
+          for (const [k, pts] of this.envEntriesOf(clipMap)) {
             if (!pts.length) continue
             autoNorm.set(k, this.envValueAt(pts, pos, loop))
             const [dest, fxId, pkey] = k.split('|')
             controlled.set(k, { dest, fxId: fxId || '', pkey })
           }
         }
-      } else if (playing && this.mode === 'arr') {
-        const tick = this.transport.ticks
+      } else if (isArr) {
         // 1) ARRANGEMENT (track-timeline) automation — absolute song time (Option B).
-        const am = t.get('auto') as Y.Map<any> | undefined
-        am?.forEach((arr2, k) => {
-          const pts = (arr2 as Y.Array<any>).toArray()
-          if (!pts.length) return
+        for (const [k, pts] of this.autoEntriesOf(tid, t)) {
+          if (!pts.length) continue
           autoNorm.set(k, this.envValueAt(pts, tick, 0))
           const [dest, fxId, pkey] = k.split('|')
           controlled.set(k, { dest, fxId: fxId || '', pkey })
-        })
+        }
         // 2) the arrangement clip under the playhead — its CLIP envelopes (these
         //    override track automation for the same param while the clip plays).
-        //    This is also the fix for clip automation not playing in Arrangement view.
-        arr.forEach((cm: Y.Map<any>) => {
-          if (cm.get('trackId') !== tid) return
-          const start = cm.get('start') ?? 0
-          const len = cm.get('len') ?? BAR
-          if (tick < start || tick >= start + len) return
-          const cl = (cm.get('len') as number) || BAR
-          const pos = (((tick - start) % cl) + cl) % cl
-          for (const k of envKeys(cm)) {
-            const pts = envPoints(cm, k)
+        const under = activeArr!.get(tid)
+        if (under) for (const u of under) {
+          for (const [k, pts] of this.envEntriesOf(u.cm)) {
             if (!pts.length) continue
-            autoNorm.set(k, this.envValueAt(pts, pos, cl))
+            autoNorm.set(k, this.envValueAt(pts, u.pos, u.loop))
             const [dest, fxId, pkey] = k.split('|')
             controlled.set(k, { dest, fxId: fxId || '', pkey })
           }
-        })
+        }
       }
 
       // ---- LFOs: add a bipolar offset on top ----
-      const lfos = t.get('lfos') as Y.Array<Y.Map<any>> | undefined
-      lfos?.forEach(lfo => {
-        const raw = lfoShapeValue(lfo.get('shape') | 0,
-          lfo.get('sync')
-            ? syncedPos / (LFO_DIV_TICKS[lfo.get('rate') | 0] || 384) + (lfo.get('phase') ?? 0)
-            : audioTime * (lfo.get('hz') ?? 1) + (lfo.get('phase') ?? 0))
-        this.lfoVals.set(lfo.get('id'), raw)
-        const pkey = lfo.get('pkey') as string
-        const dest = lfo.get('dest') as string
-        if (!lfo.get('on') || !pkey || !dest) return
-        const fxId = (lfo.get('fxId') as string) || ''
-        const k = `${dest}|${fxId}|${pkey}`
-        lfoOff.set(k, (lfoOff.get(k) ?? 0) + raw * (lfo.get('depth') ?? 0.5))
-        controlled.set(k, { dest, fxId, pkey })
-      })
+      for (const lfo of lfos) {
+        const raw = lfoShapeValue(lfo.shape,
+          lfo.sync
+            ? syncedPos / (LFO_DIV_TICKS[lfo.rate] || 384) + lfo.phase
+            : audioTime * lfo.hz + lfo.phase)
+        this.lfoVals.set(lfo.id, raw)
+        if (!lfo.on || !lfo.pkey || !lfo.dest) continue
+        const k = `${lfo.dest}|${lfo.fxId}|${lfo.pkey}`
+        lfoOff.set(k, (lfoOff.get(k) ?? 0) + raw * lfo.depth)
+        controlled.set(k, { dest: lfo.dest, fxId: lfo.fxId, pkey: lfo.pkey })
+      }
 
       // ---- combine automation base + LFO offset, apply once per param ----
       for (const [k, tg] of controlled) {
-        const r = this.resolveTarget(t, rec, tg.dest, tg.fxId, tg.pkey)
+        const r = this.resolveCached(t, rec, tid, k, tg.dest, tg.fxId, tg.pkey)
         if (!r) continue
         // Automation points are stored normalized [0,1]; map back along the
         // spec curve so frequency/exp params track logarithmically (matching the
@@ -539,17 +644,15 @@ class Engine {
     }
 
     // ---- master-bus arrangement automation (its own auto store, not a track) ----
-    if (playing && this.mode === 'arr') {
-      const tick = this.transport.ticks
-      masterAuto.forEach((arr2: Y.Array<any>, k: string) => {
-        const pts = arr2.toArray()
-        if (!pts.length) return
-        const r = this.resolveMasterTarget(k)
-        if (!r) return
+    if (isArr) {
+      for (const [k, pts] of this.masterAutoEntries()) {
+        if (!pts.length) continue
+        const r = this.resolveMasterCached(k)
+        if (!r) continue
         r.setter(clamp(valueFromSpec(r.spec, this.envValueAt(pts, tick, 0)), r.spec.min, r.spec.max))
         const [dest, fxId, pkey] = k.split('|')
         newActive.set(`master|${k}`, { tid: 'master', dest, fxId: fxId || '', pkey })
-      })
+      }
     }
 
     // master-bus effects that need a transport-synced tick (e.g. a ducker on the mix)
@@ -624,7 +727,10 @@ class Engine {
   getWaveform(): Float32Array {
     return (this.masterWave?.getValue() as Float32Array) ?? new Float32Array(0)
   }
-  /** Rough fundamental-frequency estimate (autocorrelation) for the tuner. */
+  /** Rough fundamental-frequency estimate (autocorrelation) for the tuner.
+   *  Coarse pass strides both the lag and the samples by 2 (~¼ the multiplies
+   *  of the old full O(n²) scan — that was ~262k mults per frame), then a full-
+   *  precision refine around the winner keeps the reported lag exact. */
   getPitchHz(): number {
     const buf = this.getWaveform()
     if (!buf.length) return 0
@@ -632,13 +738,21 @@ class Engine {
     let rms = 0
     for (let i = 0; i < buf.length; i++) rms += buf[i] * buf[i]
     if (Math.sqrt(rms / buf.length) < 0.01) return 0
+    const half = buf.length / 2
     let bestLag = -1, bestCorr = 0
-    for (let lag = 8; lag < buf.length / 2; lag++) {
+    for (let lag = 8; lag < half; lag += 2) {
       let c = 0
-      for (let i = 0; i < buf.length / 2; i++) c += buf[i] * buf[i + lag]
+      for (let i = 0; i < half; i += 2) c += buf[i] * buf[i + lag]
       if (c > bestCorr) { bestCorr = c; bestLag = lag }
     }
-    return bestLag > 0 ? sr / bestLag : 0
+    if (bestLag < 0) return 0
+    let fineLag = bestLag, fineCorr = -Infinity
+    for (let lag = Math.max(8, bestLag - 2); lag <= Math.min(half - 1, bestLag + 2); lag++) {
+      let c = 0
+      for (let i = 0; i < half; i++) c += buf[i] * buf[i + lag]
+      if (c > fineCorr) { fineCorr = c; fineLag = lag }
+    }
+    return sr / fineLag
   }
 
   // ---------------- graph building ----------------
@@ -701,7 +815,9 @@ class Engine {
     // Buses route to their `output` target (master or another bus) in rewireBuses,
     // after every track exists; normal tracks go straight to master.
     if (!isBus) vol.connect(this.master)
-    vol.connect(meter)
+    // NOTE: the track meter is NOT tapped here — meterDb() connects it lazily
+    // on first poll and sweepMeters() detaches it when nothing reads it, so
+    // off-screen tracks pay no analyser cost.
     // post-fader sends feed the return buses
     const sendA = new Tone.Gain(t.get('sendA') ?? 0)
     const sendB = new Tone.Gain(t.get('sendB') ?? 0)
@@ -775,15 +891,18 @@ class Engine {
    *  audio-thread CPU. Sends/bus/meter wiring on the fader is left intact — the
    *  fader just receives silence — so routing logic (rewireBuses) is unaffected. */
   private applyMuteSolo() {
-    const soloAny = tracks.toArray().some(t => t.get('solo'))
-    for (const t of tracks.toArray()) {
+    const list = this.allTracks()
+    const soloAny = list.some(t => t.get('solo'))
+    for (const t of list) {
       const rec = this.built.get(t.get('id'))
       if (!rec) continue
       const muted = !!t.get('mute') || (soloAny && !t.get('solo'))
+      // an idle bus (nothing routes into it) is cut exactly like a muted track
+      const cut = muted || this.idleBusIds.has(rec.id)
       rec.vol.mute = muted
-      if (muted !== rec.muted) {
-        rec.muted = muted
-        if (muted) { try { rec.panner.disconnect() } catch { /* ok */ } }
+      if (cut !== rec.muted) {
+        rec.muted = cut
+        if (cut) { try { rec.panner.disconnect() } catch { /* ok */ } }
         else { try { Tone.connect(rec.panner, rec.vol) } catch { /* ok */ } }
       }
     }
@@ -891,6 +1010,7 @@ class Engine {
 
   private onMasterFxDeep = (events: Y.YEvent<any>[]) => {
     if (!this.started) return
+    this.resolveCache.clear()   // master-fx param bases may have changed
     let structural = false
     for (const ev of events) {
       const path = ev.path
@@ -928,6 +1048,8 @@ class Engine {
       rec.busSends.clear()
     } catch { /* dispose races are harmless */ }
     this.built.delete(rec.id)
+    this.meterConnected.delete(rec.id)
+    this.meterLastPoll.delete(rec.id)
   }
 
   buildAll() {
@@ -1111,6 +1233,7 @@ class Engine {
   private onClipsShallow = (ev: Y.YMapEvent<any>) => {
     ev.changes.keys.forEach((change, key) => {
       if (change.action === 'delete') {
+        this.clipEnvCache.clear()
         for (const rec of this.built.values()) {
           if (rec.partKey === key) this.stopTrackNow(rec)
           if (rec.queuedKey === key) {
@@ -1124,6 +1247,9 @@ class Engine {
   }
 
   private onArrDeep = () => {
+    // any arrangement change invalidates the clip index + cached clip envelopes
+    this.arrIndexCache = null
+    this.clipEnvCache.clear()
     if (!this.started || this.mode !== 'arr') return
     if (this.arrTimer) clearTimeout(this.arrTimer)
     this.arrTimer = setTimeout(() => {
@@ -1132,6 +1258,7 @@ class Engine {
         this.clearArrParts()
         this.buildArrParts()
       }
+      this.recomputeBusIdle()   // a send envelope may have been added/removed
     }, 150)
   }
 
@@ -1145,7 +1272,10 @@ class Engine {
         setTimeout(() => this.refreshDelays(), 150)
       } else if (key === 'swing') t.swing = meta.get('swing') ?? 0
       else if (key === 'swingSubdivision') t.swingSubdivision = (meta.get('swingSubdivision') as any) ?? '16n'
-      else if (key === 'masterGain') this.master.volume.rampTo(meta.get('masterGain') ?? 0, 0.05)
+      else if (key === 'masterGain') {
+        this.master.volume.rampTo(meta.get('masterGain') ?? 0, 0.05)
+        this.resolveCache.delete('master|mix||gain')   // automation base changed
+      }
       else if (key === 'loopOn' || key === 'loopStart' || key === 'loopEnd') this.applyLoopRegion()
     })
   }
@@ -1235,10 +1365,12 @@ class Engine {
 
   private observeClipForPart(rec: BuiltTrack, key: string, clipMap: Y.Map<any>) {
     const h = () => {
+      this.clipEnvCache.delete(clipMap)   // envelope edits re-read next frame
       const prev = this.partTimers.get(rec.id)
       if (prev) clearTimeout(prev)
       this.partTimers.set(rec.id, setTimeout(() => {
         this.partTimers.delete(rec.id)
+        this.recomputeBusIdle()   // a send envelope may have been added/removed
         if (rec.partKey !== key || !rec.part) return
         rec.part.clear()
         this.buildEvents(trackById(rec.id), clipMap).forEach(ev => rec.part!.add(ev as any))
@@ -1283,6 +1415,7 @@ class Engine {
 
   private observeAudioClip(rec: BuiltTrack, key: string, clipMap: Y.Map<any>) {
     const h = () => {
+      this.clipEnvCache.delete(clipMap)
       if (rec.partKey !== key || !rec.player) return
       const p = rec.player
       try {
@@ -1299,6 +1432,7 @@ class Engine {
     const rec = this.built.get(trackId)
     const clipMap = clips.get(key) as Y.Map<any> | undefined
     if (!rec || !clipMap) return
+    this.clipEnvCache.delete(clipMap)   // may have been edited while stopped
     const started = this.transport.state === 'started'
     const atTicks = started ? this.nextBoundaryTicks() : 0
     const atT = `${atTicks}i`
@@ -1376,6 +1510,8 @@ class Engine {
     const clipMap = clips.get(key) as Y.Map<any> | undefined
     if (!rec || !clipMap) return
     this.stopTrackNow(rec)
+    // the clip may have been edited while stopped (no observer attached then)
+    this.clipEnvCache.delete(clipMap)
     const part = this.makePart(rec, clipMap)
     const loopLen = clipMap.get('len') ?? BAR
     const nowTicks = this.transport.ticks
@@ -1613,11 +1749,32 @@ class Engine {
     return ((t - rec.partStartTicks) % rec.partLoopTicks + rec.partLoopTicks) % rec.partLoopTicks / rec.partLoopTicks
   }
 
+  // Track meters connect lazily: the analyser tap only exists while something
+  // is actually polling it (the session-view meter bars), and a periodic sweep
+  // detaches it again — e.g. in Arrangement view no track analysers run at all.
+  private meterConnected = new Set<string>()
+  private meterLastPoll = new Map<string, number>()
   meterDb(trackId: string): number {
     const rec = this.built.get(trackId)
     if (!rec) return -100
+    this.meterLastPoll.set(trackId, performance.now())
+    if (!this.meterConnected.has(trackId)) {
+      try { rec.vol.connect(rec.meter) } catch { /* ok */ }
+      this.meterConnected.add(trackId)
+    }
     const v = rec.meter.getValue()
     return typeof v === 'number' ? v : Math.max(...(v as number[]))
+  }
+  private sweepMeters() {
+    if (!this.meterConnected.size) return
+    const cutoff = performance.now() - 1000
+    for (const tid of [...this.meterConnected]) {
+      if ((this.meterLastPoll.get(tid) ?? 0) >= cutoff) continue
+      const rec = this.built.get(tid)
+      if (rec) { try { rec.vol.disconnect(rec.meter) } catch { /* ok */ } }
+      this.meterConnected.delete(tid)
+      this.meterLastPoll.delete(tid)
+    }
   }
 
   /** A built effect from either a track or the master bus (trackId === 'master'). */
@@ -1676,6 +1833,13 @@ class Engine {
   // graph changes so applyModulation can early-out to a true idle otherwise.
   private modActive = false
   private recomputeModActive() {
+    // Track/fx/LFO topology or values changed — drop the per-frame caches so
+    // the modulation loop re-derives them once. (This is called from every
+    // graph rebuild and from every onTracksDeep batch, so it doubles as the
+    // central invalidation point.)
+    this.lfoCfgCache.clear()
+    this.resolveCache.clear()
+    this.trackAutoCache.clear()
     let active = this.builtMasterFx.some(f => !!f.fx.tick)   // a master ducker/autotune ticks
     for (const r of this.built.values()) {
       if (active) break
@@ -1684,6 +1848,66 @@ class Engine {
       if (((t?.get('lfos') as Y.Array<any> | undefined)?.length ?? 0) > 0) { active = true; break }
     }
     this.modActive = active
+    this.recomputeBusIdle()
+  }
+
+  // ---- idle send-bus cut ----
+  // A bus that nothing sends into still renders its whole fx chain — the
+  // built-in A bus carries an always-on convolution reverb, one of the most
+  // expensive nodes in the graph. When every route into a bus is statically
+  // zero AND nothing can be modulating a send (no LFO on a send, no send
+  // envelope on a playing/arrangement clip or track automation), cut it with
+  // the same panner-disconnect trick as mute so it costs ~no audio-thread CPU.
+  private idleBusIds = new Set<string>()
+  private recomputeBusIdle() {
+    if (!this.started) return
+    const buses = [...this.built.values()].filter(r => r.kind === 'bus')
+    if (!buses.length) {
+      if (this.idleBusIds.size) { this.idleBusIds.clear(); this.applyMuteSolo() }
+      return
+    }
+    const list = this.allTracks()
+    let sendMod = false
+    for (const t of list) {
+      if (this.lfoCfgsOf(t.get('id') as string, t).some(l => l.on && l.dest === 'send')) { sendMod = true; break }
+    }
+    if (!sendMod && this.mode === 'session') {
+      for (const rec of this.built.values()) {
+        if (!rec.partKey) continue
+        const cm = clips.get(rec.partKey) as Y.Map<any> | undefined
+        if (cm && this.envEntriesOf(cm).some(([k]) => k.startsWith('send|'))) { sendMod = true; break }
+      }
+    } else if (!sendMod && this.mode === 'arr') {
+      sendMod = this.arrIndex().some(c => this.envEntriesOf(c.cm).some(([k]) => k.startsWith('send|')))
+        || list.some(t => this.autoEntriesOf(t.get('id') as string, t).some(([k]) => k.startsWith('send|')))
+    }
+    const active = new Set<string>()
+    for (const b of buses) {
+      const bt = trackById(b.id)
+      const send = bt?.get('send') as string | undefined   // built-in A/B marker
+      if (send && sendMod) { active.add(b.id); continue }
+      for (const t of list) {
+        if (t.get('id') === b.id) continue
+        if (send && (((t.get(send === 'B' ? 'sendB' : 'sendA') as number) ?? 0) > 0.0001)) { active.add(b.id); break }
+        const sm = t.get('sends') as Y.Map<number> | undefined
+        if (sm && (((sm.get(b.id) as number) ?? 0) > 0.0001)) { active.add(b.id); break }
+      }
+    }
+    // activity flows along bus→bus output routing (an active bus wakes its target)
+    let grew = true
+    while (grew) {
+      grew = false
+      for (const b of buses) {
+        if (!active.has(b.id)) continue
+        const out = (trackById(b.id)?.get('output') as string) || 'master'
+        if (out !== 'master' && this.built.get(out)?.kind === 'bus' && !active.has(out)) { active.add(out); grew = true }
+      }
+    }
+    const idle = new Set<string>()
+    for (const b of buses) if (!active.has(b.id)) idle.add(b.id)
+    let changed = idle.size !== this.idleBusIds.size
+    if (!changed) for (const id of idle) if (!this.idleBusIds.has(id)) { changed = true; break }
+    if (changed) { this.idleBusIds = idle; this.applyMuteSolo() }
   }
 
   masterDb(): number {

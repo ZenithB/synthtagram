@@ -43,7 +43,7 @@ function DevMeter({ trackId, deviceId }: { trackId: string; deviceId: string }) 
     ref.current.style.width = `${norm * 100}%`
     ref.current.style.background = col
     ref.current.style.boxShadow = norm > 0.02 ? `0 0 5px ${col}` : 'none'
-  })
+  }, true, 2) // 30Hz — smoothed meter, one per device card
   return <div className="dev-meter"><div ref={ref} className="dev-meter-fill" /></div>
 }
 
