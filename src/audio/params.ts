@@ -3,7 +3,7 @@
 // paramId format "dest|fxId|pkey" matches the engine's resolveTarget addressing.
 
 import { trackById, masterFx, meta } from '../state/doc'
-import { instSchema, fxSchema, mixSpec, ParamSpec, normFromSpec } from './schema'
+import { instSchema, fxSchema, mixSpec, LFO_PARAMS, ParamSpec, normFromSpec } from './schema'
 import * as Y from 'yjs'
 
 export type AutoTarget = { key: string; label: string }
@@ -35,6 +35,9 @@ export function autoTargets(trackId: string | null): AutoTarget[] {
     fxSchema(f.get('type')).params.filter((p: any) => !p.steps).forEach((p: any) =>
       out.push({ key: `fx|${f.get('id')}|${p.key}`, label: `${fxSchema(f.get('type')).label} · ${p.label}` }))
   })
+  // Each LFO's rate (Hz) is automatable too (only bites on a free-running LFO).
+  ;(t.get('lfos') as Y.Array<Y.Map<any>> | undefined)?.forEach((l: Y.Map<any>, i: number) =>
+    out.push({ key: `lfo|${l.get('id')}|hz`, label: `LFO ${i + 1} · Rate` }))
   return out
 }
 
@@ -59,6 +62,14 @@ export function paramSpecAndValue(trackId: string, key: string): { spec: ParamSp
   if (dest === 'inst') {
     const spec = instSchema(t.get('inst').get('type')).params.find(p => p.key === pkey); if (!spec) return null
     return { spec, value: ((t.get('inst').get('params') as any).get(pkey) as number) ?? spec.def }
+  }
+  if (dest === 'lfo') {
+    // another LFO's rate (Hz) — matches the engine's LFO_PARAMS[2] (log) spec
+    const lfos = t.get('lfos') as Y.Array<Y.Map<any>> | undefined
+    let l: Y.Map<any> | undefined
+    if (lfos) for (let i = 0; i < lfos.length; i++) if (lfos.get(i).get('id') === fxId) { l = lfos.get(i); break }
+    if (!l) return null
+    return { spec: LFO_PARAMS[2], value: (l.get('hz') as number) ?? LFO_PARAMS[2].def }
   }
   // fx
   const fx = (t.get('fx') as any).toArray().find((f: any) => f.get('id') === fxId)

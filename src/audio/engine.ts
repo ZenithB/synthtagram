@@ -14,7 +14,7 @@ import {
   isAudioClip, masterFx, masterAuto,
 } from '../state/doc'
 import { makeInstrument, makeEffect, Inst, Fx } from './devices'
-import { instSchema, fxSchema, lfoShapeValue, LFO_DIV_TICKS, mixSpec, midiFxSchema, valueFromSpec, ParamSpec } from './schema'
+import { instSchema, fxSchema, lfoShapeValue, LFO_DIV_TICKS, LFO_PARAMS, mixSpec, midiFxSchema, valueFromSpec, ParamSpec } from './schema'
 import { getSampleBuffer, onSampleReady } from './samples'
 import { clipAudioBuffer, configureAudioPlayer, audioFieldsFromMap, audioRate } from './audioclip'
 import { applyMidiFx as applyMidiFxData } from './midifx'
@@ -92,6 +92,15 @@ class Engine {
   private modRAF = 0
   private lfoVals = new Map<string, number>()  // lfoId -> current raw value [-1,1]
   private activeMod = new Map<string, { tid: string; dest: string; fxId: string; pkey: string }>()
+  // Free-running LFOs integrate their own phase (so a modulated rate glides
+  // instead of jumping), keyed by LFO id. lfoRateMod holds this frame's
+  // effective rate (Hz) for any LFO whose rate is being modulated/automated —
+  // by another LFO (dest 'lfo') or an automation lane — else the LFO uses its
+  // stored Hz. Entries not refreshed each frame are dropped (snap back to base).
+  private lfoPhase = new Map<string, number>()
+  private lfoLastTime = 0
+  private lfoRateMod = new Map<string, number>()
+  private lfoRatedThisFrame = new Set<string>()
 
   // ---- per-frame lookup caches ----
   // The modulation loop runs every animation frame; everything it needs from
@@ -529,6 +538,20 @@ class Engine {
       const spec = { key: 'send', label: 'Send', min: 0, max: 1, def: 0 } as any
       return { spec, base, setter: (v: number) => node.gain.rampTo(v, 0.02) }
     }
+    if (dest === 'lfo') {
+      // Target another LFO's RATE (Hz). fxId holds the target LFO's id. Only
+      // free-running (non-sync) LFOs actually track Hz — a synced target keeps
+      // its tempo division. The setter stashes the effective Hz for this frame;
+      // the LFO loop reads it (see applyModulation).
+      const lfos = t.get('lfos') as Y.Array<Y.Map<any>> | undefined
+      let base: number | undefined
+      if (lfos) for (let i = 0; i < lfos.length; i++) {
+        const l = lfos.get(i)
+        if (l.get('id') === fxId) { base = l.get('hz') ?? 1; break }
+      }
+      if (typeof base !== 'number') return null
+      return { spec: LFO_PARAMS[2], base, setter: (v: number) => this.lfoRateMod.set(fxId, v) }
+    }
     const fxMap = this.findFxMap(t, fxId)
     const bf = rec.fx.find(f => f.id === fxId)
     if (!fxMap || !bf) return null
@@ -550,6 +573,12 @@ class Engine {
     const bpm = this.transport.bpm.value
     const tick = this.transport.ticks
     const isArr = playing && this.mode === 'arr'
+    // Per-frame time delta for free-LFO phase integration (clamped so a long
+    // idle gap can't fling the phase). Which LFO rates got modulated this frame
+    // is tracked so stale rate overrides snap back to the LFO's stored Hz.
+    const dt = Math.min(0.1, Math.max(0, audioTime - (this.lfoLastTime || audioTime)))
+    this.lfoLastTime = audioTime
+    this.lfoRatedThisFrame.clear()
 
     // ARRANGEMENT: one pass over the cached clip index finds the clips under
     // the playhead per track — the old code re-walked EVERY arr clip once per
@@ -618,10 +647,19 @@ class Engine {
 
       // ---- LFOs: add a bipolar offset on top ----
       for (const lfo of lfos) {
-        const raw = lfoShapeValue(lfo.shape,
-          lfo.sync
-            ? syncedPos / (LFO_DIV_TICKS[lfo.rate] || 384) + lfo.phase
-            : audioTime * lfo.hz + lfo.phase)
+        let raw: number
+        if (lfo.sync) {
+          // tempo-locked: cycle length is a fixed tick division (rate not Hz)
+          raw = lfoShapeValue(lfo.shape, syncedPos / (LFO_DIV_TICKS[lfo.rate] || 384) + lfo.phase)
+        } else {
+          // free-run: integrate phase from the (possibly modulated) rate so a
+          // changing Hz glides smoothly instead of jumping
+          const effHz = this.lfoRateMod.get(lfo.id) ?? lfo.hz
+          let ph = (this.lfoPhase.get(lfo.id) ?? 0) + dt * effHz
+          if (ph > 1e6) ph -= 1e6
+          this.lfoPhase.set(lfo.id, ph)
+          raw = lfoShapeValue(lfo.shape, ph + lfo.phase)
+        }
         this.lfoVals.set(lfo.id, raw)
         if (!lfo.on || !lfo.pkey || !lfo.dest) continue
         const k = `${lfo.dest}|${lfo.fxId}|${lfo.pkey}`
@@ -639,6 +677,7 @@ class Engine {
         const base = autoNorm.has(k) ? valueFromSpec(r.spec, autoNorm.get(k)!) : r.base
         const off = (lfoOff.get(k) ?? 0) * (r.spec.max - r.spec.min) * 0.5
         r.setter(clamp(base + off, r.spec.min, r.spec.max))
+        if (tg.dest === 'lfo') this.lfoRatedThisFrame.add(tg.fxId)   // its rate override is live this frame
         newActive.set(`${tid}|${k}`, { tid, dest: tg.dest, fxId: tg.fxId, pkey: tg.pkey })
       }
     }
@@ -666,6 +705,11 @@ class Engine {
       if (!newActive.has(k)) this.restoreParam(m)
     }
     this.activeMod = newActive
+    // drop rate overrides no longer driven this frame → those LFOs revert to
+    // their stored Hz on the next frame
+    if (this.lfoRateMod.size) {
+      for (const id of this.lfoRateMod.keys()) if (!this.lfoRatedThisFrame.has(id)) this.lfoRateMod.delete(id)
+    }
   }
 
   private envValueAt(pts: { t: number; v: number }[], pos: number, loop: number): number {

@@ -61,6 +61,7 @@ function targetRange(track: Y.Map<any>, dest: string, fxId: string, pkey: string
   let spec
   if (dest === 'inst') spec = instSchema(track.get('inst').get('type')).params.find(s => s.key === pkey)
   else if (dest === 'mix') spec = mixSpec(pkey)
+  else if (dest === 'lfo') spec = LFO_PARAMS[2]   // another LFO's rate (Hz)
   else {
     const fxArr = track.get('fx') as Y.Array<Y.Map<any>>
     for (let i = 0; i < fxArr.length; i++) if (fxArr.get(i).get('id') === fxId) { spec = fxSchema(fxArr.get(i).get('type')).params.find(s => s.key === pkey); break }
@@ -69,7 +70,7 @@ function targetRange(track: Y.Map<any>, dest: string, fxId: string, pkey: string
 }
 
 // All continuous (non-enum) parameters on a track that an LFO can modulate.
-type ModTarget = { dest: 'inst' | 'fx'; fxId: string; pkey: string; label: string }
+type ModTarget = { dest: 'inst' | 'fx' | 'lfo'; fxId: string; pkey: string; label: string }
 function modTargets(track: Y.Map<any>): ModTarget[] {
   const out: ModTarget[] = []
   const instSch = instSchema(track.get('inst').get('type'))
@@ -100,6 +101,14 @@ function LfoCard({ trackId, track, lfo }: { trackId: string; track: Y.Map<any>; 
   const pkey = lfo.get('pkey') as string
   const curVal = dest && pkey ? `${dest}|${lfo.get('fxId') || ''}|${pkey}` : ''
   const targets = modTargets(track)
+  // With >1 LFO, this LFO can also modulate ANOTHER LFO's rate (its own is
+  // excluded — an LFO can't drive itself). Rate-modulation only bites on a
+  // free-running target; a synced target keeps its tempo division.
+  const lfoRateTargets: ModTarget[] = (track.get('lfos') as Y.Array<Y.Map<any>>).toArray()
+    .map((l, i) => ({ lid: l.get('id') as string, i }))
+    .filter(x => x.lid !== id)
+    .map(x => ({ dest: 'lfo', fxId: x.lid, pkey: 'hz', label: `LFO ${x.i + 1} · Rate` }))
+  const allTargets = [...targets, ...lfoRateTargets]
 
   return (
     <div className={`device lfo-device ${on ? '' : 'bypassed'}`}>
@@ -135,7 +144,7 @@ function LfoCard({ trackId, track, lfo }: { trackId: string; track: Y.Map<any>; 
             setLfoTarget(trackId, id, d, fxId, k)
           }}>
           <option value="">— map to… —</option>
-          {targets.map(t => <option key={targetVal(t)} value={targetVal(t)}>{t.label}</option>)}
+          {allTargets.map(t => <option key={targetVal(t)} value={targetVal(t)}>{t.label}</option>)}
         </select>
       </div>
     </div>
