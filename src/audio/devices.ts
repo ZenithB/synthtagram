@@ -504,13 +504,18 @@ export function makeEffect(type: string, p: Record<string, number>): Fx {
     }
     case 'filter': {
       const types: BiquadFilterType[] = ['lowpass', 'highpass', 'bandpass']
+      // slope index → biquad rolloff (dB/oct). Web Audio only supports these three.
+      const rolloffs = [-12, -24, -48] as const
+      const rolloffOf = (i: number) => rolloffs[Math.max(0, Math.min(2, i | 0))]
       const node = new Tone.Filter(p.freq, types[p.ftype | 0])
       node.Q.value = p.q
+      node.rolloff = rolloffOf(p.slope ?? 0)
       return {
         node,
         set: (k, v) => {
           if (k === 'ftype') node.type = types[v | 0]
           else if (k === 'freq') node.frequency.rampTo(v, 0.03)
+          else if (k === 'slope') node.rolloff = rolloffOf(v)
           else node.Q.value = v
         },
         dispose: () => node.dispose(),

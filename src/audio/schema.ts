@@ -174,6 +174,8 @@ export const EFFECTS: EffectSchema[] = [
       { key: 'ftype', label: 'Type', min: 0, max: 2, def: 0, int: true, steps: ['LP', 'HP', 'BP'] },
       { key: 'freq', label: 'Freq', min: 40, max: 18000, def: 2000, exp: true, fmt: fmtHz },
       { key: 'q', label: 'Res', min: 0, max: 12, def: 1, fmt: v => v.toFixed(1) },
+      // Web Audio biquads only do 12/24/48 dB/oct — def 0 (12dB) keeps the old sound.
+      { key: 'slope', label: 'Slope', min: 0, max: 2, def: 0, int: true, steps: ['12dB', '24dB', '48dB'] },
     ],
   },
   {
