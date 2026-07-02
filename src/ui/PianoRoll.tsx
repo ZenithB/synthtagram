@@ -79,6 +79,7 @@ export function PianoRoll() {
   const drawLen = useUI(s => s.drawLen)
   const drawMode = useUI(s => s.drawMode)
   const snapScale = useUI(s => s.snapScale)
+  const notePreview = useUI(s => s.notePreview)
   const lane = useUI(s => s.lane)
   const theme = useUI(s => s.theme)
   const [fold, setFold] = useState(false)
@@ -100,6 +101,21 @@ export function PianoRoll() {
   const cursorRef = useRef('default')
   const autoPaint = useRef<Map<number, number> | null>(null)
   const autoMode = !!autoTarget
+
+  // Audition helper for the "preview on select/move" toggle: gated by ui.notePreview
+  // so the button truly silences it. Used for click-select, vertical drag, and
+  // arrow-key transpose — never for drawing new notes or key-column clicks,
+  // which already have their own always-on preview.
+  const previewNote = (p: number, vel: number, dur = 160) => {
+    if (!ui.notePreview) return
+    engine.previewOn(trackId, p, vel)
+    setTimeout(() => engine.previewOff(trackId, p), dur)
+  }
+  // Tracks the anchor note's original pitch/velocity for the duration of a move
+  // drag, and the last dPitch we previewed at, so a vertical drag re-triggers
+  // the note only when it actually crosses into a new pitch — not every pixel.
+  const dragPreviewAnchor = useRef<{ p: number; v: number } | null>(null)
+  const lastPreviewDPitch = useRef(0)
 
   // Dirty flag for the canvas painter: the rAF loop only repaints when
   // something could have changed. Every React render marks it (useY re-renders
@@ -490,8 +506,11 @@ export function PianoRoll() {
         dragRef.current = { type: 'resize', ids: [...sel.current], orig, startTick: loc.tick, dTick: 0 }
       } else {
         dragRef.current = { type: 'move', ids: [...sel.current], orig, startTick: loc.tick, startPitch: loc.pitch, dTick: 0, dPitch: 0, copy: e.altKey, moved: false }
-        engine.previewOn(trackId, n.p, n.v)
-        setTimeout(() => engine.previewOff(trackId, n.p), 160)
+        // the clicked note plays once here for "selected", then again during the
+        // drag itself each time it crosses into a new pitch (see onPointerMove)
+        dragPreviewAnchor.current = { p: n.p, v: n.v }
+        lastPreviewDPitch.current = 0
+        previewNote(n.p, n.v)
       }
     } else {
       if (drawMode) {
@@ -582,6 +601,13 @@ export function PianoRoll() {
       }
       d.copy = d.copy || e.altKey
       d.moved = d.moved || Math.abs(d.dTick) > 0 || Math.abs(d.dPitch) > 0
+      // "moved up/down" — re-audition the anchor note each time the drag crosses
+      // into a new pitch step, so dragging vertically helps find the right note.
+      if (d.dPitch !== lastPreviewDPitch.current) {
+        lastPreviewDPitch.current = d.dPitch
+        const anchor = dragPreviewAnchor.current
+        if (anchor) previewNote(clamp(anchor.p + d.dPitch, 0, 127), anchor.v, 140)
+      }
     } else if (d.type === 'resize') {
       d.dTick = Math.round((loc.tick - d.startTick) / (e.shiftKey ? 6 : gridTicks)) * (e.shiftKey ? 6 : gridTicks)
     } else if (d.type === 'marquee') {
@@ -789,6 +815,14 @@ export function PianoRoll() {
         if (e.key === 'ArrowUp') patches = tools.transpose(entries, e.shiftKey ? 12 : 1, snapScale && !e.shiftKey && !isDrum, root, scaleId)
         if (e.key === 'ArrowDown') patches = tools.transpose(entries, e.shiftKey ? -12 : -1, snapScale && !e.shiftKey && !isDrum, root, scaleId)
         updateNotes(clipMap, patches, 'Nudge notes')
+        // "moved up/down" via keyboard — audition each note at its new pitch
+        if (ui.notePreview && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+          for (const [pid, patch] of patches) {
+            if (typeof patch.p !== 'number') continue
+            const vel = entries.find(([id]) => id === pid)?.[1].v ?? 0.85
+            previewNote(patch.p, vel)
+          }
+        }
       }
     }
     window.addEventListener('keydown', h)
@@ -870,6 +904,10 @@ export function PianoRoll() {
         <button className="color-dot" style={{ background: CLIP_COLORS[clipMap.get('color') ?? 0] }}
           data-info="Clip color"
           onClick={e => openMenu(e, [{ custom: <ColorRow colors={CLIP_COLORS} onPick={i => setClipField(selClip, 'color', i)} /> }])} />
+        <button className={`tbtn ${notePreview ? 'on' : ''}`} onClick={() => setUI({ notePreview: !notePreview })}
+          data-info="Play a note when it's selected or moved up/down — helps you find the right pitch">
+          <Icon name="headphones" size={13} />
+        </button>
         <label className="roll-field" data-info="Clip length in bars">
           Len
           <select value={lenBars} onChange={e => setClipField(selClip, 'len', Math.round(+e.target.value * BAR), 'Clip length')}>

@@ -20,6 +20,7 @@ export type UIState = {
   drawMode: boolean
   drawProb: number
   snapScale: boolean
+  notePreview: boolean          // piano-roll: play a note when selected or moved up/down
   lane: 'vel' | 'prob'
   recording: boolean
   recQuantize: boolean
@@ -68,6 +69,7 @@ export const ui: UIState = {
   drawMode: false,
   drawProb: 1,
   snapScale: false,
+  notePreview: true,
   lane: 'vel',
   recording: false,
   recQuantize: true,

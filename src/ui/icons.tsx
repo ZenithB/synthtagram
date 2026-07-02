@@ -71,6 +71,11 @@ const ICONS: Record<string, React.ReactNode> = {
   send: <path d="M2.4 13 L13.6 8 L2.4 3 L4.4 8 Z M4.4 8 H13.6" />,
   follow: <path d="M3 4 L8 8 L3 12 Z M9 4 L14 8 L9 12 Z" fill="currentColor" stroke="none" />,
   mic: <><rect x="6" y="2" width="4" height="7.5" rx="2" /><path d="M3.8 8 a4.2 4.2 0 0 0 8.4 0 M8 12.2 V14 M5.6 14 H10.4" /></>,
+  headphones: <>
+    <path d="M2.6 10 V8 a5.4 5.4 0 0 1 10.8 0 v2" />
+    <rect x="1.8" y="9.4" width="3" height="4.6" rx="1.3" />
+    <rect x="11.2" y="9.4" width="3" height="4.6" rx="1.3" />
+  </>,
   steps: <><rect x="2" y="3" width="3" height="3" rx="0.5" fill="currentColor" stroke="none" /><rect x="6.5" y="3" width="3" height="3" rx="0.5" /><rect x="11" y="3" width="3" height="3" rx="0.5" fill="currentColor" stroke="none" /><rect x="2" y="10" width="3" height="3" rx="0.5" /><rect x="6.5" y="10" width="3" height="3" rx="0.5" fill="currentColor" stroke="none" /><rect x="11" y="10" width="3" height="3" rx="0.5" /></>,
   curve: <path d="M2 13 C7 13, 9 3, 14 3" />,
   pencil: <>
