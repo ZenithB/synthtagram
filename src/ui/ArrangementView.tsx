@@ -16,7 +16,7 @@ import { engine } from '../audio/engine'
 import { setUI, ui, useUI, toast } from '../state/store'
 import { useY, useRaf } from './hooks'
 import { openMenu, ColorRow, MenuItem, capturePointer, Knob, HFader, InlineRename } from './widgets'
-import { selectClip, trackHeaderMenu, assignKitToTrack, addSampleToArr } from './actions'
+import { selectClip, trackHeaderMenu, assignKitToTrack, addSampleToArr, copyArrSelection, hasArrClipboard, pasteArrClipboard } from './actions'
 import { Icon } from './icons'
 import { peersList, subscribeAwareness, awarenessVersion } from '../state/net'
 import { MIDI_LOOPS, PROGRESSIONS, progressionClip, clipInKey } from '../packs'
@@ -436,6 +436,36 @@ export function ArrangementView() {
               const t = snap((e.clientX - rect.left) / z / pxPerTick, false)
               const id = addArrClip(row.id, Math.max(0, t), { name: 'Clip', color: row.color, len: BAR * 4, notes: {} })
               selectClip({ kind: 'arr', id }, true)
+            }}
+            onContextMenu={e => {
+              // clips & automation lanes own their right-click menu; don't
+              // double-fire when the event bubbles up from one of those.
+              const el = e.target as HTMLElement
+              if (el.closest('.arr-clip') || el.closest('.arr-auto-lane')) return
+              const rect = e.currentTarget.getBoundingClientRect()
+              const y = (e.clientY - rect.top) / z
+              const row = rows[trackIdxAtY(y)]
+              if (!row || !row.clips || rowAtY(y)?.kind === 'auto') return   // buses/master/automation hold no clips
+              if (!selArrIds.length && !hasArrClipboard()) return   // nothing to copy, paste, or delete here
+              const atTick = Math.max(0, snap((e.clientX - rect.left) / z / pxPerTick, e.shiftKey))
+              const n = selArrIds.length
+              const items: MenuItem[] = []
+              if (n) {
+                items.push(
+                  { label: <><Icon name="grid" size={12} /> Copy {n > 1 ? `(${n})` : ''}</>, fn: () => copyArrSelection(selArrIds) },
+                  { label: <><Icon name="grid" size={12} /> Cut</>, fn: () => { copyArrSelection(selArrIds); selArrIds.forEach(id => deleteArrClip(id)); setUI({ selArrIds: [] }) } },
+                  { label: <><Icon name="note" size={12} /> Duplicate {n > 1 ? `(${n})` : ''}</>, fn: () => {
+                      const newIds = selArrIds.map(id => duplicateArrClip(id)).filter(Boolean) as string[]
+                      setUI({ selArrIds: newIds, selClip: null })
+                    } },
+                  'sep',
+                )
+              }
+              items.push({ label: <><Icon name="grid" size={12} /> Paste</>, fn: () => pasteArrClipboard(atTick, row.id), disabled: !hasArrClipboard() })
+              if (n) {
+                items.push('sep', { label: <><Icon name="close" size={12} /> Delete {n > 1 ? `${n} selected` : ''}</>, fn: () => { selArrIds.forEach(id => deleteArrClip(id)); setUI({ selArrIds: [] }) }, danger: true })
+              }
+              openMenu(e, items)
             }}
             onDragOver={e => e.preventDefault()}
             onDrop={e => {

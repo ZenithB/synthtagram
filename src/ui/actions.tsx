@@ -1,12 +1,13 @@
 // Cross-cutting UI actions shared by SessionView, Browser, the command
 // palette and keyboard shortcuts.
 
-import { ClipRef, CLIP_COLORS, BAR } from '../types'
+import * as Y from 'yjs'
+import { ClipRef, CLIP_COLORS, BAR, clamp } from '../types'
 import {
   addTrack, addScene, clipKey, clips, duplicateClipTo, getClipMap, clipToJSON,
   jsonToClipMap, loadProject, mutate, scenes, setInstrument, trackById, ClipJSON, TrackJSON,
   addAudioTrack, createAudioClip, addBusTrack, tracks, busCanReach, setTrackOutput, setBusSend,
-  setTrackColor, duplicateTrack, moveTrack, removeTrack, assignDrumKit, addArrClip,
+  setTrackColor, duplicateTrack, moveTrack, removeTrack, assignDrumKit, addArrClip, arr, id8,
 } from '../state/doc'
 import { ColorRow, MenuItem } from './widgets'
 import { setUI, toast, ui } from '../state/store'
@@ -148,6 +149,62 @@ export function pasteClipTo(trackId: string, sceneId: string) {
 
 export function hasClipboard() {
   return clipboard !== null
+}
+
+// ---------------- arrangement clipboard (multi-clip) ----------------
+// Copies preserve the RELATIVE layout of a multi-clip selection (time offset +
+// track-lane offset from the earliest/topmost clip), so pasting elsewhere keeps
+// the group's shape instead of stacking every clip onto one track/tick.
+let arrClipboard: { dTick: number; dLane: number; json: ClipJSON }[] | null = null
+
+// Lane order for clip-carrying tracks (buses/master hold no clips), matching
+// ArrangementView's row layout — used to translate a track id to/from an offset.
+function clipLaneIds(): string[] {
+  return tracks.toArray().filter(t => t.get('kind') !== 'bus').map(t => t.get('id'))
+}
+
+export function copyArrSelection(ids: string[]) {
+  const items = ids.map(id => arr.get(id) as Y.Map<any> | undefined).filter((m): m is Y.Map<any> => !!m)
+  if (!items.length) return
+  const laneIds = clipLaneIds()
+  const laneIdx = (tid: string) => laneIds.indexOf(tid)
+  const minStart = Math.min(...items.map(m => m.get('start') ?? 0))
+  const minLane = Math.min(...items.map(m => laneIdx(m.get('trackId'))))
+  arrClipboard = items.map(m => ({
+    dTick: (m.get('start') ?? 0) - minStart,
+    dLane: laneIdx(m.get('trackId')) - minLane,
+    json: clipToJSON(m),
+  }))
+  toast(`Copied ${items.length} clip${items.length > 1 ? 's' : ''}`)
+}
+
+export function hasArrClipboard() {
+  return !!arrClipboard && arrClipboard.length > 0
+}
+
+/** Paste the arrangement clipboard anchored at (atTick, atTrackId); the copied
+ *  clips' relative time/lane offsets are preserved, clamped onto real tracks. */
+export function pasteArrClipboard(atTick: number, atTrackId: string) {
+  if (!arrClipboard || !arrClipboard.length) { toast('Clipboard is empty'); return }
+  const laneIds = clipLaneIds()
+  const baseLane = laneIds.indexOf(atTrackId)
+  if (baseLane < 0) return
+  const items = arrClipboard
+  const newIds: string[] = []
+  // One transaction (direct Y writes, not nested addArrClip calls) so the whole
+  // paste is a single undo step.
+  mutate(items.length > 1 ? 'Paste clips' : 'Paste clip', () => {
+    for (const item of items) {
+      const lane = clamp(baseLane + item.dLane, 0, laneIds.length - 1)
+      const tid = laneIds[lane]
+      const start = Math.max(0, atTick + item.dTick)
+      const nid = id8()
+      arr.set(nid, jsonToClipMap(item.json, { trackId: tid, start, id: nid }))
+      newIds.push(nid)
+    }
+  })
+  setUI({ selArrIds: newIds, selClip: null })
+  toast(`Pasted ${newIds.length} clip${newIds.length > 1 ? 's' : ''}`)
 }
 
 // ---------------- track creation ----------------

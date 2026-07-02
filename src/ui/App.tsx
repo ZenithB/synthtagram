@@ -15,9 +15,9 @@ import { ContextMenuHost } from './widgets'
 import { setUI, ui, useUI } from '../state/store'
 import { engine } from '../audio/engine'
 import { undoMgr } from '../state/undo'
-import { chat, scenes, deleteClipAt, deleteArrClip, duplicateArrClip, getClipMap, isAudioClip } from '../state/doc'
+import { chat, scenes, tracks, deleteClipAt, deleteArrClip, duplicateArrClip, getClipMap, isAudioClip } from '../state/doc'
 import { setPresence } from '../state/net'
-import { copyClipRef, pasteClipTo, duplicateClipToNextScene, importAudioFile } from './actions'
+import { copyClipRef, pasteClipTo, duplicateClipToNextScene, importAudioFile, copyArrSelection, hasArrClipboard, pasteArrClipboard } from './actions'
 
 export function App() {
   const view = useUI(s => s.view)
@@ -144,6 +144,13 @@ export function App() {
           ui.selArrIds.forEach(id => duplicateArrClip(id))
           return
         }
+        if (mod && e.key.toLowerCase() === 'c') { copyArrSelection(ui.selArrIds); return }
+        if (mod && e.key.toLowerCase() === 'x') {
+          copyArrSelection(ui.selArrIds)
+          ui.selArrIds.forEach(id => deleteArrClip(id))
+          setUI({ selArrIds: [] })
+          return
+        }
       }
       if (!ui.detailOpen && ui.selClip) {
         if (e.key === 'Delete' || e.key === 'Backspace') {
@@ -158,10 +165,19 @@ export function App() {
           else duplicateArrClip(ui.selClip.id)
           return
         }
-        if (mod && e.key.toLowerCase() === 'c') { copyClipRef(ui.selClip); return }
+        if (mod && e.key.toLowerCase() === 'c') {
+          if (ui.selClip.kind === 'arr') copyArrSelection([ui.selClip.id])
+          else copyClipRef(ui.selClip)
+          return
+        }
       }
-      if (mod && e.key.toLowerCase() === 'v' && ui.selClip?.kind === 'session') {
-        pasteClipTo(ui.selClip.trackId, ui.selClip.sceneId)
+      if (mod && e.key.toLowerCase() === 'v') {
+        if (ui.selClip?.kind === 'session') { pasteClipTo(ui.selClip.trackId, ui.selClip.sceneId); return }
+        if (ui.view === 'arr' && hasArrClipboard()) {
+          const laneIds = tracks.toArray().filter(t => t.get('kind') !== 'bus').map(t => t.get('id'))
+          const tid = (ui.selTrackId && laneIds.includes(ui.selTrackId)) ? ui.selTrackId : laneIds[0]
+          if (tid) pasteArrClipboard(Math.round(engine.arrSeekTicks), tid)
+        }
       }
     }
     window.addEventListener('keydown', h)
