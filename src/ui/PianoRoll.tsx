@@ -12,7 +12,7 @@ import {
 } from '../state/doc'
 import { setUI, ui, useUI, toast } from '../state/store'
 import { useY, subscribeFrame } from './hooks'
-import { openMenu, ColorRow } from './widgets'
+import { openMenu, ColorRow, beginVDrag } from './widgets'
 import { inScale, snapToScale, midiName, getScale } from '../theory'
 import { instSchema, fxSchema, mixSpec, FOLLOW_ACTIONS } from '../audio/schema'
 import * as tools from '../noteTools'
@@ -94,7 +94,10 @@ export function PianoRoll() {
 
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const boxRef = useRef<HTMLDivElement>(null)
-  const view = useRef({ scrollX: 0, scrollY: 0, pxPerBar: 150 })
+  // pxPerBar = horizontal zoom, rowZoom = vertical zoom (both driven by dragging
+  // the key/pad column). Read live by the draw loop, so zooming needs no React
+  // re-render mid-drag — just needsDraw.
+  const view = useRef({ scrollX: 0, scrollY: 0, pxPerBar: 150, rowZoom: 1 })
   const sel = useRef<Set<string>>(new Set())
   const dragRef = useRef<Drag>(null)
   const hoverRef = useRef<{ tick: number; pitch: number } | null>(null)
@@ -145,7 +148,10 @@ export function PianoRoll() {
   const autoTargetLabel = autoTarget ? (targetsList.find(t => t.key === autoTarget)?.label ?? '') : ''
 
   // ---- visible pitch rows (fold support) ----
-  const rowH = isDrum ? 30 : 13
+  // rowZoom scales row height (vertical zoom). Read from the ref so it tracks
+  // live zoom drags; a bump() after the drag re-renders so interaction handlers
+  // pick up the new height.
+  const rowH = Math.max(4, Math.round((isDrum ? 30 : 13) * view.current.rowZoom))
   const pitches: number[] = []
   if (isDrum) {
     for (let p = DRUM_PADS.length - 1; p >= 0; p--) pitches.push(p)
@@ -207,6 +213,9 @@ export function PianoRoll() {
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
       const len = clipMap.get('len') ?? BAR
       const pxPerTick = view.current.pxPerBar / BAR
+      // live row height (vertical zoom) — shadows the outer const so a zoom drag
+      // repaints at the new height without waiting for a React render
+      const rowH = Math.max(4, Math.round((isDrum ? 30 : 13) * view.current.rowZoom))
       const { scrollX, scrollY } = view.current
       const gridH = H - LANE_H
 
@@ -467,8 +476,30 @@ export function PianoRoll() {
     try { (e.target as HTMLElement).setPointerCapture(e.pointerId) } catch { /* synthetic */ }
 
     if (loc.inKeys) {
+      // audition the clicked key…
       engine.previewOn(trackId, loc.pitch, 0.85)
       setTimeout(() => engine.previewOff(trackId, loc.pitch), 250)
+      // …and let a horizontal drag from the key/pad column zoom the roll on both
+      // axes together: drag left = zoom in, drag right = zoom out.
+      const startX = e.clientX
+      const z0 = ui.uiZoom || 1
+      const startPx = view.current.pxPerBar
+      const startRz = view.current.rowZoom
+      beginVDrag(
+        ev => {
+          const dx = (ev.clientX - startX) / z0
+          const f = clamp(Math.pow(1.006, -dx), 0.15, 8)
+          view.current.pxPerBar = clamp(startPx * f, 40, 600)
+          view.current.rowZoom = clamp(startRz * f, 0.5, 3.5)
+          needsDraw.current = true
+        },
+        () => {
+          const rh = Math.max(4, Math.round((isDrum ? 30 : 13) * view.current.rowZoom))
+          view.current.scrollY = clamp(view.current.scrollY, 0, Math.max(0, pitches.length * rh - 100))
+          needsDraw.current = true
+          bump()
+        },
+      )
       return
     }
     if (loc.inLane) {
