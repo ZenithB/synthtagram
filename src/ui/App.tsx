@@ -17,7 +17,8 @@ import { engine } from '../audio/engine'
 import { undoMgr } from '../state/undo'
 import { chat, scenes, tracks, deleteClipAt, deleteArrClip, duplicateArrClip, getClipMap, isAudioClip } from '../state/doc'
 import { setPresence } from '../state/net'
-import { copyClipRef, pasteClipTo, duplicateClipToNextScene, importAudioFile, copyArrSelection, hasArrClipboard, pasteArrClipboard } from './actions'
+import { copyClipRef, pasteClipTo, duplicateClipToNextScene, importAudioToBank, copyArrSelection, hasArrClipboard, pasteArrClipboard } from './actions'
+import { collectDroppedAudio } from '../audio/samples'
 
 export function App() {
   const view = useUI(s => s.view)
@@ -91,14 +92,19 @@ export function App() {
     return () => chat.unobserve(h)
   }, [])
 
-  // drag an audio file anywhere onto the app to import it as an audio clip
+  // drag audio files — or entire folders — anywhere onto the app: they land in
+  // the sample bank (Samples section of the browser); no track is auto-created.
   useEffect(() => {
     const over = (e: DragEvent) => { if (e.dataTransfer?.types.includes('Files')) { e.preventDefault(); document.body.classList.add('drag-audio') } }
     const leave = (e: DragEvent) => { if (e.relatedTarget === null) document.body.classList.remove('drag-audio') }
-    const drop = (e: DragEvent) => {
+    const drop = async (e: DragEvent) => {
       document.body.classList.remove('drag-audio')
-      const f = e.dataTransfer?.files?.[0]
-      if (f && f.type.startsWith('audio')) { e.preventDefault(); importAudioFile(f) }
+      if (!e.dataTransfer?.types.includes('Files')) return
+      // browser sections handle their own file drops (drop into a folder)
+      if ((e.target as HTMLElement)?.closest?.('.bsamples')) return
+      e.preventDefault()
+      const items = await collectDroppedAudio(e.dataTransfer)
+      if (items.length) importAudioToBank(items)
     }
     window.addEventListener('dragover', over)
     window.addEventListener('dragleave', leave)

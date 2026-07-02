@@ -14,7 +14,7 @@ import { setUI, toast, ui } from '../state/store'
 import { setPresence } from '../state/net'
 import { engine } from '../audio/engine'
 import { meta } from '../state/doc'
-import { importSampleFile, getSampleBuffer } from '../audio/samples'
+import { getSampleBuffer, importSampleFilesBulk, looksLikeAudio } from '../audio/samples'
 import { DRUM_PACKS, packSampleId, ROLE_LABEL, RoleName } from '../audio/drumpacks'
 import { DEFAULT_PROJECT, demoProject, DRUM_KITS, InstPreset, MidiLoop, Progression, progressionClip, clipInKey } from '../packs'
 
@@ -83,36 +83,57 @@ export function selectTrack(trackId: string | null) {
   setPresence({ sel: trackId ? { trackId } : null })
 }
 
-// ---------------- audio import ----------------
-let audioColor = 5
-export async function importAudioFile(file: File, targetTrackId?: string, targetSceneId?: string) {
-  try {
-    const { id, name } = await importSampleFile(file)
-    const buf = getSampleBuffer(id)
-    const bpm = meta.get('bpm') ?? 120
-    const durTicks = buf ? Math.max(BAR / 4, Math.round(buf.duration * (bpm / 60) * 96)) : BAR * 2
-    const color = (audioColor = (audioColor + 4) % CLIP_COLORS.length)
-    let trackId: string = (targetTrackId && trackById(targetTrackId)?.get('kind') === 'audio') ? targetTrackId : addAudioTrack(name, color)
-    let sceneId: string | undefined = targetSceneId
-    if (!sceneId) {
-      for (let i = 0; i < scenes.length; i++) { const sid = scenes.get(i).get('id'); if (!clips.get(clipKey(trackId, sid))) { sceneId = sid; break } }
-      sceneId = sceneId ?? (scenes.length ? scenes.get(0).get('id') : addScene())
-    }
-    const ref = createAudioClip(trackId, sceneId as string, id, name, durTicks, color)
-    selectClip(ref, true)
-    toast(`Imported "${name}"`)
-  } catch (e) {
-    console.error(e)
-    toast('Could not import that audio file')
-  }
+// ---------------- audio import (into the sample bank — never auto-creates tracks) ----------------
+
+/** Bulk-import audio files into the sample bank, preserving folder paths. */
+export async function importAudioToBank(items: { file: File; folder: string }[]) {
+  if (!items.length) { toast('No audio files found'); return }
+  if (items.length > 3) toast(`Importing ${items.length} samples…`)
+  const { ok, failed } = await importSampleFilesBulk(items)
+  if (ok) toast(`Added ${ok} sample${ok > 1 ? 's' : ''} to the bank${failed ? ` (${failed} unreadable)` : ''}`)
+  else toast('Could not decode those files')
 }
 
-export function pickAudioFile() {
+/** File picker (multi-select) → sample bank. */
+export function pickAudioFiles(folder = '') {
   const input = document.createElement('input')
   input.type = 'file'
   input.accept = 'audio/*'
-  input.onchange = () => { const f = input.files?.[0]; if (f) importAudioFile(f) }
+  input.multiple = true
+  input.onchange = () => {
+    const files = [...(input.files ?? [])].filter(looksLikeAudio)
+    importAudioToBank(files.map(file => ({ file, folder })))
+  }
   input.click()
+}
+
+/** Folder picker → sample bank, keeping the folder's internal structure. */
+export function pickAudioFolder(baseFolder = '') {
+  const input = document.createElement('input')
+  input.type = 'file'
+  ;(input as any).webkitdirectory = true
+  input.onchange = () => {
+    const items = [...(input.files ?? [])].filter(looksLikeAudio).map(file => {
+      // webkitRelativePath = "PackName/Sub/kick.wav" → folder path without the file
+      const rel = ((file as any).webkitRelativePath as string) || file.name
+      const dir = rel.split('/').slice(0, -1).join('/')
+      return { file, folder: [baseFolder, dir].filter(Boolean).join('/') }
+    })
+    importAudioToBank(items)
+  }
+  input.click()
+}
+
+/** Place a bank sample as a session audio clip (used by slot drag-drops). */
+export function placeSampleInSlot(trackId: string, sceneId: string, sampleId: string, name: string) {
+  const t = trackById(trackId)
+  if (!t) return
+  if (t.get('kind') !== 'audio') { toast('Drop samples onto an audio track (＋ Audio)'); return }
+  const buf = getSampleBuffer(sampleId)
+  const bpm = meta.get('bpm') ?? 120
+  const durTicks = buf ? Math.max(BAR / 4, Math.round(buf.duration * (bpm / 60) * 96)) : BAR * 2
+  const ref = createAudioClip(trackId, sceneId, sampleId, name, durTicks, t.get('color') ?? 5)
+  selectClip(ref, true)
 }
 
 export function selectClip(ref: ClipRef | null, openDetail = false) {

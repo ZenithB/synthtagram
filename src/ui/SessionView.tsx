@@ -20,6 +20,7 @@ import {
   selectClip, selectTrack, copyClipRef, pasteClipTo, hasClipboard,
   addSynthTrack, addDrumTrack, addAudio, addBus, attemptSetOutput,
   duplicateClipToNextScene, loadLoop, loadProgression, trackHeaderMenu, assignKitToTrack,
+  placeSampleInSlot,
 } from './actions'
 import { MIDI_LOOPS, INST_PRESETS, DRUM_KITS, PROGRESSIONS } from '../packs'
 import { applyPreset, applyDrumKit } from './actions'
@@ -138,6 +139,13 @@ function ClipSlot({ track, sceneId }: { track: Y.Map<any>; sceneId: string }) {
     const clipSrc = e.dataTransfer.getData('stg/clip')
     const loopName = e.dataTransfer.getData('stg/loop')
     const progName = e.dataTransfer.getData('stg/prog')
+    const sample = e.dataTransfer.getData('stg/sample')
+    if (sample) {
+      // a bank sample dropped on a slot becomes an audio clip (audio tracks only)
+      const [sid, nm] = sample.split('::')
+      placeSampleInSlot(trackId, sceneId, sid, nm || 'Sample')
+      return
+    }
     if (clipSrc && clipSrc !== key) {
       const [srcT, srcS] = clipSrc.split('|')
       duplicateClipTo({ kind: 'session', trackId: srcT, sceneId: srcS }, trackId, sceneId)
