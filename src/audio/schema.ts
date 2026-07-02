@@ -51,6 +51,15 @@ const adsr = (a: number, d: number, s: number, r: number): ParamSpec[] => [
   { key: 'release', label: 'Release', min: 0.01, max: 4, def: r, exp: true, fmt: fmtSec },
 ]
 
+// Built-in per-synth LFO (wired to the filter cutoff in devices.ts). Amount 0
+// keeps it silent AND stopped, so existing projects sound unchanged.
+export const INST_LFO_SHAPES = ['Sin', 'Tri', 'Saw', 'Sqr']
+const instLfo = (): ParamSpec[] => [
+  { key: 'lfoShape', label: 'LFO', min: 0, max: INST_LFO_SHAPES.length - 1, def: 0, int: true, steps: INST_LFO_SHAPES },
+  { key: 'lfoRate', label: 'LFO Rate', min: 0.05, max: 16, def: 2, exp: true, fmt: v => `${v.toFixed(2)}Hz` },
+  { key: 'lfoAmt', label: 'LFO Amt', min: 0, max: 1, def: 0, fmt: fmtPct },
+]
+
 export const WAVES = ['sawtooth', 'square', 'triangle', 'sine', 'fatsawtooth', 'fatsquare', 'fattriangle']
 const WAVE_LABELS = ['Saw', 'Sqr', 'Tri', 'Sin', 'FatSaw', 'FatSqr', 'FatTri']
 
@@ -88,7 +97,9 @@ export const INSTRUMENTS: InstrumentSchema[] = [
       { key: 'spread', label: 'Spread', min: 0, max: 60, def: 18, fmt: v => `${Math.round(v)}ct` },
       { key: 'cutoff', label: 'Cutoff', min: 80, max: 14000, def: 7000, exp: true, fmt: fmtHz },
       { key: 'res', label: 'Res', min: 0, max: 10, def: 0.7, fmt: v => v.toFixed(1) },
+      { key: 'slope', label: 'Slope', min: 0, max: 2, def: 0, int: true, steps: ['12dB', '24dB', '48dB'] },
       ...adsr(0.01, 0.15, 0.6, 0.4),
+      ...instLfo(),
     ],
   },
   {
@@ -114,9 +125,12 @@ export const INSTRUMENTS: InstrumentSchema[] = [
       { key: 'wave', label: 'Wave', min: 0, max: 3, def: 0, int: true, steps: WAVE_LABELS },
       { key: 'cutoff', label: 'Cutoff', min: 40, max: 8000, def: 900, exp: true, fmt: fmtHz },
       { key: 'res', label: 'Res', min: 0, max: 10, def: 2, fmt: v => v.toFixed(1) },
+      // def 1 = 24dB: MonoSynth's filter has always run at -24 rolloff
+      { key: 'slope', label: 'Slope', min: 0, max: 2, def: 1, int: true, steps: ['12dB', '24dB', '48dB'] },
       { key: 'envAmt', label: 'Env Amt', min: 0, max: 6, def: 2.5, fmt: v => v.toFixed(1) },
       { key: 'glide', label: 'Glide', min: 0, max: 0.3, def: 0.02, exp: false, fmt: fmtSec },
       ...adsr(0.003, 0.2, 0.45, 0.25),
+      ...instLfo(),
     ],
   },
   {
@@ -152,12 +166,53 @@ export const INSTRUMENTS: InstrumentSchema[] = [
       { key: 'release', label: 'Release', min: 0.01, max: 4, def: 0.4, exp: true, fmt: fmtSec },
     ],
   },
+  {
+    // Granular synthesis engine: a cloud of short sample "grains" pitched by the
+    // keyboard. Parameter set mirrors the modern granular standard (Granulator/
+    // Quanta/Portal): size, density, position + spray, pitch + jitter, reverse
+    // probability, grain window shape, stereo spread, and an amp envelope.
+    type: 'granular', label: 'Granular', icon: 'grain',
+    params: [
+      { key: 'size', label: 'Grain', min: 0.02, max: 0.5, def: 0.12, exp: true, fmt: fmtSec },
+      { key: 'dens', label: 'Density', min: 2, max: 80, def: 18, exp: true, fmt: v => `${v.toFixed(0)}/s` },
+      { key: 'pos', label: 'Position', min: 0, max: 1, def: 0.15, fmt: fmtPct },
+      { key: 'spray', label: 'Spray', min: 0, max: 1, def: 0.05, fmt: fmtPct },
+      { key: 'pitch', label: 'Pitch', min: -24, max: 24, def: 0, fmt: fmtSemi },
+      { key: 'pjit', label: 'P.Jitter', min: 0, max: 12, def: 0, fmt: v => `${v.toFixed(1)}st` },
+      { key: 'rev', label: 'Reverse', min: 0, max: 1, def: 0, fmt: fmtPct },
+      { key: 'shape', label: 'Shape', min: 0, max: 1, def: 0.5, fmt: fmtPct },
+      { key: 'spread', label: 'Spread', min: 0, max: 1, def: 0.6, fmt: fmtPct },
+      { key: 'attack', label: 'Attack', min: 0.001, max: 2, def: 0.05, exp: true, fmt: fmtSec },
+      { key: 'release', label: 'Release', min: 0.01, max: 4, def: 0.4, exp: true, fmt: fmtSec },
+    ],
+  },
   { type: 'drum', label: 'Drum Kit', icon: 'drum', params: drumParams() },
   { type: 'audiobus', label: 'Audio', icon: 'sampler', params: [] },
 ]
 
 // ----------------- effects -----------------
 export type EffectSchema = { type: string; label: string; icon: string; params: ParamSpec[] }
+
+// 7-band parametric EQ: band 0 = low shelf, 1–5 = peaking, 6 = high shelf.
+// Flat b{i}_* keys (like the drum kit / multiband) so presets, automation,
+// macros and LFOs address every band with zero extra plumbing.
+export const EQ7_FREQS = [60, 150, 400, 1000, 2500, 6000, 12000]
+export const EQ7_BANDS = EQ7_FREQS.length
+export function eq7BandType(i: number): 'lowshelf' | 'peaking' | 'highshelf' {
+  return i === 0 ? 'lowshelf' : i === EQ7_BANDS - 1 ? 'highshelf' : 'peaking'
+}
+function eq7Params(): ParamSpec[] {
+  const out: ParamSpec[] = []
+  EQ7_FREQS.forEach((f, i) => {
+    const name = i === 0 ? 'LoShelf' : i === EQ7_BANDS - 1 ? 'HiShelf' : `Band ${i + 1}`
+    out.push(
+      { key: `b${i}_freq`, label: `${name} Freq`, min: 20, max: 20000, def: f, exp: true, fmt: fmtHz },
+      { key: `b${i}_gain`, label: `${name} Gain`, min: -15, max: 15, def: 0, fmt: fmtDb },
+      { key: `b${i}_q`, label: `${name} Q`, min: 0.3, max: 12, def: 1, exp: true, fmt: v => v.toFixed(2) },
+    )
+  })
+  return out
+}
 
 export const EFFECTS: EffectSchema[] = [
   {
@@ -192,6 +247,23 @@ export const EFFECTS: EffectSchema[] = [
       { key: 'size', label: 'Size', min: 0.2, max: 10, def: 2.2, exp: true, fmt: fmtSec },
       { key: 'mix', label: 'Mix', min: 0, max: 1, def: 0.3, fmt: fmtPct },
     ],
+  },
+  {
+    // Plate model: instantly-dense synthesized plate IR through a convolver,
+    // with pre-delay and a damping filter on the wet path (see devices.ts).
+    type: 'plate', label: 'Plate Verb', icon: 'plate',
+    params: [
+      { key: 'decay', label: 'Decay', min: 0.3, max: 8, def: 1.8, exp: true, fmt: fmtSec },
+      { key: 'predelay', label: 'PreDelay', min: 0, max: 0.2, def: 0.02, fmt: v => `${Math.round(v * 1000)}ms` },
+      { key: 'damp', label: 'Damp', min: 500, max: 16000, def: 6000, exp: true, fmt: fmtHz },
+      { key: 'mix', label: 'Mix', min: 0, max: 1, def: 0.3, fmt: fmtPct },
+    ],
+  },
+  {
+    // 7-band parametric EQ: low shelf, 5 peaking bands, high shelf. Custom
+    // graphic card (draggable dots + response curve + RTA) in DeviceRack.
+    type: 'eq7', label: 'EQ Seven', icon: 'eq',
+    params: eq7Params(),
   },
   {
     type: 'chorus', label: 'Chorus', icon: 'chorus',

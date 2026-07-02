@@ -167,6 +167,19 @@ const ICONS: Record<string, React.ReactNode> = {
     <path d="M2.6 8 C5.6 8, 8 5.6, 8 2.6" opacity="0.7" />
     <path d="M2.6 11.4 C7.4 11.4, 11.4 7.4, 11.4 2.6" opacity="0.4" />
   </>,
+  // plate reverb: a suspended plate with ripples
+  plate: <>
+    <rect x="2.2" y="4.4" width="11.6" height="8" rx="1" />
+    <path d="M4.2 8.4 C5.2 6.8, 6.4 6.8, 7.4 8.4 S9.8 10, 10.8 8.4" opacity="0.7" />
+    <line x1="5" y1="1.8" x2="5" y2="4.4" /><line x1="11" y1="1.8" x2="11" y2="4.4" />
+  </>,
+  // granular: a scatter of grains around a wave
+  grain: <>
+    <path d="M2 8 C4 5.4, 6 5.4, 8 8 S12 10.6, 14 8" opacity="0.5" />
+    <circle cx="4" cy="4.6" r="1" {...F} /><circle cx="7.4" cy="3.4" r="0.8" {...F} />
+    <circle cx="11" cy="5" r="1.1" {...F} /><circle cx="5.4" cy="11.6" r="1.1" {...F} />
+    <circle cx="9" cy="12.4" r="0.8" {...F} /><circle cx="12.6" cy="11" r="1" {...F} />
+  </>,
   chorus: <>
     <path d="M2 8 C3.5 4, 6 4, 8 8 S12.5 12, 14 8" />
     <path d="M3.4 8 C4.9 4, 7.4 4, 9.4 8 S13.9 12, 15.4 8" opacity="0.4" />

@@ -8,9 +8,9 @@ import { DRUM_PADS, clamp } from '../types'
 import {
   trackById, setInstParam, setInstrument, addFx, removeFx, moveFx, setFxParam, setFxOn,
   setInstOut, setFxOut,
-  addLfo, removeLfo, setLfoField, setLfoTarget,
+  addLfo, removeLfo, setLfoField, addLfoTarget, removeLfoTarget, lfoTargetList,
   addMidiFx, removeMidiFx, setMidiFxParam, setMidiFxOn, midifxOf,
-  ensureMacros, macrosOf, setMacroValue, addMacroTarget, clearMacroTargets, setMacroName,
+  ensureMacros, macrosOf, setMacroValue, addMacroTarget, removeMacroTarget, clearMacroTargets, setMacroName,
   setSamplerSample, setDrumPadSample, busList,
   clips, clipKey, isAudioClip, masterFx,
 } from '../state/doc'
@@ -21,6 +21,7 @@ import { Knob, openMenu, beginVDrag } from './widgets'
 import {
   INSTRUMENTS, EFFECTS, instSchema, fxSchema, defaultsFor,
   LFO_SHAPES, LFO_DIVS, LFO_PARAMS, MIDI_FX, midiFxSchema, mixSpec, fmtPct, fmtDb, ParamSpec,
+  EQ7_BANDS, EQ7_FREQS, eq7BandType,
 } from '../audio/schema'
 import { INST_PRESETS, DRUM_KITS } from '../packs'
 import { engine } from '../audio/engine'
@@ -97,9 +98,6 @@ function LfoCard({ trackId, track, lfo }: { trackId: string; track: Y.Map<any>; 
   const id = lfo.get('id') as string
   const on = !!lfo.get('on')
   const sync = !!lfo.get('sync')
-  const dest = lfo.get('dest') as string
-  const pkey = lfo.get('pkey') as string
-  const curVal = dest && pkey ? `${dest}|${lfo.get('fxId') || ''}|${pkey}` : ''
   const targets = modTargets(track)
   // With >1 LFO, this LFO can also modulate ANOTHER LFO's rate (its own is
   // excluded — an LFO can't drive itself). Rate-modulation only bites on a
@@ -109,6 +107,22 @@ function LfoCard({ trackId, track, lfo }: { trackId: string; track: Y.Map<any>; 
     .filter(x => x.lid !== id)
     .map(x => ({ dest: 'lfo', fxId: x.lid, pkey: 'hz', label: `LFO ${x.i + 1} · Rate` }))
   const allTargets = [...targets, ...lfoRateTargets]
+
+  // multi-target mapping: menu lists every parameter, a • marks assigned ones,
+  // clicking toggles the assignment on/off
+  const assigned = lfoTargetList(lfo)
+  const assignedKeys = new Set(assigned.map(tg => `${tg.dest}|${tg.fxId}|${tg.pkey}`))
+  const mapMenu = (e: React.MouseEvent) => openMenu(e, [
+    ...(assigned.length
+      ? [{ label: <><Icon name="close" size={11} /> Clear {assigned.length} mapping{assigned.length > 1 ? 's' : ''}</>, fn: () => assigned.forEach(tg => removeLfoTarget(trackId, id, tg.dest, tg.fxId, tg.pkey)) } as const, 'sep' as const]
+      : []),
+    ...allTargets.map(t => ({
+      label: (assignedKeys.has(targetVal(t)) ? '• ' : '') + t.label,
+      fn: () => assignedKeys.has(targetVal(t))
+        ? removeLfoTarget(trackId, id, t.dest, t.fxId, t.pkey)
+        : addLfoTarget(trackId, id, t.dest, t.fxId, t.pkey),
+    })),
+  ])
 
   return (
     <div className={`device lfo-device ${on ? '' : 'bypassed'}`}>
@@ -137,15 +151,11 @@ function LfoCard({ trackId, track, lfo }: { trackId: string; track: Y.Map<any>; 
       <div className="lfo-row">
         <Knob spec={LFO_PARAMS[0]} value={lfo.get('depth') ?? 0.5} onChange={v => setLfoField(trackId, id, 'depth', v)} size={36} />
         <Knob spec={LFO_PARAMS[1]} value={lfo.get('phase') ?? 0} onChange={v => setLfoField(trackId, id, 'phase', v)} size={36} />
-        <select className="device-select lfo-target" value={curVal} data-info="Parameter this LFO modulates (around its manual value)"
-          onChange={e => {
-            if (!e.target.value) { setLfoTarget(trackId, id, '', '', ''); return }
-            const [d, fxId, k] = e.target.value.split('|')
-            setLfoTarget(trackId, id, d, fxId, k)
-          }}>
-          <option value="">— map to… —</option>
-          {allTargets.map(t => <option key={targetVal(t)} value={targetVal(t)}>{t.label}</option>)}
-        </select>
+        <button className={`macro-label lfo-target ${assigned.length ? 'mapped' : ''}`}
+          data-info="Map this LFO to one or more parameters — • marks assigned ones; click an entry to toggle"
+          onClick={mapMenu}>
+          {assigned.length ? `${assigned.length} mapped` : 'map to…'}
+        </button>
       </div>
     </div>
   )
@@ -222,7 +232,7 @@ function InstrumentPanel({ trackId, track }: { trackId: string; track: Y.Map<any
         )}
       </div>
 
-      {(type === 'sampler' || type === 'ksampler') && <SamplerControls trackId={trackId} inst={inst} />}
+      {(type === 'sampler' || type === 'ksampler' || type === 'granular') && <SamplerControls trackId={trackId} inst={inst} />}
 
       {kind === 'drum' ? (
         <div className="drum-panel"
@@ -404,6 +414,159 @@ function MultibandCard({ trackId, fxId, params }: { trackId: string; fxId: strin
   )
 }
 
+// ---- EQ Seven: graphic 7-band parametric editor + RTA ----
+// Log-frequency axis 20Hz–20kHz, ±18dB curve axis. Drag a band dot to set its
+// freq/gain; mouse-wheel over the graph tweaks the NEAREST band's Q. The
+// combined response curve is computed with RBJ biquad math (matching the
+// audio-thread filters), and the RTA behind it draws the live pre-EQ spectrum
+// from the effect's analyser tap.
+const EQ_FMIN = 20, EQ_FMAX = 20000, EQ_DB = 18
+const eqX = (f: number, W: number) => (Math.log(f / EQ_FMIN) / Math.log(EQ_FMAX / EQ_FMIN)) * W
+const eqF = (x: number, W: number) => EQ_FMIN * Math.pow(EQ_FMAX / EQ_FMIN, clamp(x, 0, W) / W)
+const eqY = (db: number, H: number) => (0.5 - db / (2 * EQ_DB)) * H
+const eqDb = (y: number, H: number) => clamp((0.5 - y / H) * 2 * EQ_DB, -15, 15)
+
+type BiquadC = { b0: number; b1: number; b2: number; a0: number; a1: number; a2: number }
+function eqCoeffs(type: 'lowshelf' | 'peaking' | 'highshelf', f: number, q: number, gainDb: number, sr: number): BiquadC {
+  const A = Math.pow(10, gainDb / 40)
+  const w0 = (2 * Math.PI * Math.min(f, sr * 0.49)) / sr
+  const cw = Math.cos(w0), sw = Math.sin(w0)
+  if (type === 'peaking') {
+    const alpha = sw / (2 * Math.max(0.05, q))
+    return { b0: 1 + alpha * A, b1: -2 * cw, b2: 1 - alpha * A, a0: 1 + alpha / A, a1: -2 * cw, a2: 1 - alpha / A }
+  }
+  // Web Audio shelves use a fixed slope (S=1) and ignore Q
+  const alpha = (sw / 2) * Math.SQRT2
+  const sq = 2 * Math.sqrt(A) * alpha
+  if (type === 'lowshelf') {
+    return {
+      b0: A * ((A + 1) - (A - 1) * cw + sq), b1: 2 * A * ((A - 1) - (A + 1) * cw), b2: A * ((A + 1) - (A - 1) * cw - sq),
+      a0: (A + 1) + (A - 1) * cw + sq, a1: -2 * ((A - 1) + (A + 1) * cw), a2: (A + 1) + (A - 1) * cw - sq,
+    }
+  }
+  return {
+    b0: A * ((A + 1) + (A - 1) * cw + sq), b1: -2 * A * ((A - 1) + (A + 1) * cw), b2: A * ((A + 1) + (A - 1) * cw - sq),
+    a0: (A + 1) - (A - 1) * cw + sq, a1: 2 * ((A - 1) - (A + 1) * cw), a2: (A + 1) - (A - 1) * cw - sq,
+  }
+}
+function eqMagDb(c: BiquadC, w: number): number {
+  const cw = Math.cos(w), sw = Math.sin(w), c2 = Math.cos(2 * w), s2 = Math.sin(2 * w)
+  const nr = c.b0 + c.b1 * cw + c.b2 * c2, ni = -(c.b1 * sw + c.b2 * s2)
+  const dr = c.a0 + c.a1 * cw + c.a2 * c2, di = -(c.a1 * sw + c.a2 * s2)
+  return 10 * Math.log10(Math.max(1e-12, (nr * nr + ni * ni) / (dr * dr + di * di)))
+}
+
+// Live pre-EQ spectrum, drawn on a canvas behind the response curve.
+function Rta({ trackId, fxId, W, H }: { trackId: string; fxId: string; W: number; H: number }) {
+  const ref = useRef<HTMLCanvasElement>(null)
+  const buf = useRef<Float32Array | null>(null)
+  useRaf(() => {
+    const canvas = ref.current
+    const an = engine.deviceAnalyser(trackId, fxId)
+    if (!canvas || !an) return
+    if (!buf.current || buf.current.length !== an.frequencyBinCount) buf.current = new Float32Array(an.frequencyBinCount)
+    an.getFloatFrequencyData(buf.current as any)
+    const ctx = canvas.getContext('2d')!
+    ctx.clearRect(0, 0, W, H)
+    const sr = engine.sampleRate || 44100
+    ctx.beginPath()
+    ctx.moveTo(0, H)
+    for (let x = 0; x <= W; x += 3) {
+      const f = eqF(x, W)
+      const bin = Math.min(buf.current.length - 1, Math.round((f / (sr / 2)) * buf.current.length))
+      const db = buf.current[bin]
+      const y = clamp(((-10 - db) / 80) * H, 0, H)   // −10dBFS top … −90 bottom
+      ctx.lineTo(x, y)
+    }
+    ctx.lineTo(W, H)
+    ctx.closePath()
+    ctx.fillStyle = 'rgba(140, 180, 255, 0.13)'
+    ctx.fill()
+  }, true, 2)
+  return <canvas ref={ref} className="eq7-rta" width={W} height={H} />
+}
+
+function Eq7Card({ trackId, fxId, params }: { trackId: string; fxId: string; params: Y.Map<number> }) {
+  const svgRef = useRef<SVGSVGElement>(null)
+  const [, force] = useState(0)
+  const W = 432, H = 150
+  const sr = engine.sampleRate || 44100
+  const g = (k: string, d: number) => params.get(k) ?? d
+  const set = (k: string, v: number) => { setFxParam(trackId, fxId, k, v); force(n => n + 1) }
+  const bands = Array.from({ length: EQ7_BANDS }, (_, i) => ({
+    i,
+    type: eq7BandType(i),
+    f: g(`b${i}_freq`, EQ7_FREQS[i]),
+    gain: g(`b${i}_gain`, 0),
+    q: g(`b${i}_q`, 1),
+  }))
+
+  // combined response curve (sum of per-band dB responses)
+  const coeffs = bands.map(b => eqCoeffs(b.type, b.f, b.q, b.gain, sr))
+  const pts: string[] = []
+  for (let x = 0; x <= W; x += 4) {
+    const w = (2 * Math.PI * eqF(x, W)) / sr
+    let db = 0
+    for (const c of coeffs) db += eqMagDb(c, w)
+    pts.push(`${x},${eqY(clamp(db, -EQ_DB, EQ_DB), H).toFixed(1)}`)
+  }
+
+  const loc = (e: PointerEvent | React.PointerEvent | React.WheelEvent) => {
+    const r = svgRef.current!.getBoundingClientRect()
+    return { x: (e.clientX - r.left) * (W / r.width), y: (e.clientY - r.top) * (H / r.height) }
+  }
+  const nearestBand = (x: number) => {
+    let best = 0, bd = Infinity
+    bands.forEach(b => { const d = Math.abs(eqX(b.f, W) - x); if (d < bd) { bd = d; best = b.i } })
+    return best
+  }
+  const onDown = (e: React.PointerEvent) => {
+    if (e.button !== 0) return
+    e.stopPropagation()
+    const { x } = loc(e)
+    const i = nearestBand(x)
+    const apply = (ev: PointerEvent | React.PointerEvent) => {
+      const p = loc(ev)
+      set(`b${i}_freq`, clamp(eqF(p.x, W), 20, 20000))
+      set(`b${i}_gain`, Math.round(eqDb(p.y, H) * 10) / 10)
+    }
+    apply(e)
+    beginVDrag(apply)
+  }
+  const onWheel = (e: React.WheelEvent) => {
+    e.preventDefault(); e.stopPropagation()
+    const { x } = loc(e)
+    const i = nearestBand(x)
+    const q = clamp(g(`b${i}_q`, 1) * (e.deltaY > 0 ? 0.88 : 1.14), 0.3, 12)
+    set(`b${i}_q`, Math.round(q * 100) / 100)
+  }
+
+  const gridFreqs = [50, 100, 200, 500, 1000, 2000, 5000, 10000]
+  return (
+    <div className="eq7-card">
+      <div className="eq7-graph" style={{ width: W, height: H }}>
+        <Rta trackId={trackId} fxId={fxId} W={W} H={H} />
+        <svg ref={svgRef} width={W} height={H} viewBox={`0 0 ${W} ${H}`} className="eq7-svg"
+          onPointerDown={onDown} onWheel={onWheel}
+          data-info="Drag a dot: frequency + gain. Mouse wheel: Q of the nearest band. Shaded area = live input spectrum (RTA).">
+          {gridFreqs.map(f => <line key={f} className="eq7-grid" x1={eqX(f, W)} y1={0} x2={eqX(f, W)} y2={H} />)}
+          <line className="eq7-zero" x1={0} y1={H / 2} x2={W} y2={H / 2} />
+          <polyline className="eq7-curve" points={pts.join(' ')} />
+          {bands.map(b => (
+            <g key={b.i} className="eq7-band">
+              <circle className="eq7-dot" cx={eqX(b.f, W)} cy={eqY(clamp(b.gain, -EQ_DB, EQ_DB), H)} r={5.5} />
+              <text className="eq7-dotlabel" x={eqX(b.f, W)} y={eqY(clamp(b.gain, -EQ_DB, EQ_DB), H) - 8}>{b.i + 1}</text>
+            </g>
+          ))}
+          {gridFreqs.map(f => (
+            <text key={'t' + f} className="eq7-flabel" x={eqX(f, W) + 2} y={H - 4}>{f >= 1000 ? `${f / 1000}k` : f}</text>
+          ))}
+        </svg>
+      </div>
+    </div>
+  )
+}
+
 function FxCard({ trackId, fx }: { trackId: string; fx: Y.Map<any> }) {
   const type = fx.get('type') as string
   const fxId = fx.get('id') as string
@@ -412,7 +575,7 @@ function FxCard({ trackId, fx }: { trackId: string; fx: Y.Map<any> }) {
   const schema = fxSchema(type)
   const isComp = type === 'comp' || type === 'opto'
   return (
-    <div className={`device fx-device ${on ? '' : 'bypassed'} ${type === 'mbcomp' ? 'mbcomp-device' : ''}`}>
+    <div className={`device fx-device ${on ? '' : 'bypassed'} ${type === 'mbcomp' || type === 'eq7' ? 'mbcomp-device' : ''}`}>
       <div className="device-head">
         <button className={`power ${on ? 'on' : ''}`} data-info="Bypass effect" onClick={() => setFxOn(trackId, fxId, !on)}><Icon name="power" size={13} /></button>
         <span className="device-title"><Icon name={schema.icon} size={13} /> {schema.label}</span>
@@ -424,6 +587,8 @@ function FxCard({ trackId, fx }: { trackId: string; fx: Y.Map<any> }) {
       </div>
       {type === 'mbcomp' ? (
         <MultibandCard trackId={trackId} fxId={fxId} params={params} />
+      ) : type === 'eq7' ? (
+        <Eq7Card trackId={trackId} fxId={fxId} params={params} />
       ) : (
         <>
           <div className="knob-row">
@@ -549,17 +714,29 @@ function MacroPanel({ trackId, track }: { trackId: string; track: Y.Map<any> }) 
       </div>
       <div className="macro-grid">
         {macros.toArray().map((m, i) => {
-          const nTargets = (m.get('targets') as Y.Array<any>).length
+          const mTargets = (m.get('targets') as Y.Array<Y.Map<any>>).toArray()
+          const nTargets = mTargets.length
+          const mKeys = new Set(mTargets.map(x => `${x.get('dest')}|${x.get('fxId') || ''}|${x.get('pkey')}`))
+          // menu shared by the label click AND a right-click on the knob itself:
+          // • marks assigned params; clicking an entry toggles the assignment
+          const mapMenu = (e: React.MouseEvent) => openMenu(e, [
+            ...(nTargets ? [{ label: <><Icon name="close" size={11} /> Clear {nTargets} mapping{nTargets > 1 ? 's' : ''}</>, fn: () => clearMacroTargets(trackId, i) } as const, 'sep' as const] : []),
+            ...targets.map(t => ({
+              label: (mKeys.has(targetVal(t)) ? '• ' : '') + t.label,
+              fn: () => mKeys.has(targetVal(t))
+                ? removeMacroTarget(trackId, i, t.dest, t.fxId, t.pkey)
+                : addMacroTarget(trackId, i, t.dest, t.fxId, t.pkey),
+            })),
+          ])
           return (
             <div key={i} className="macro-cell">
-              <Knob spec={MACRO_SPEC} value={m.get('value') ?? 0} onChange={v => setMacroValue(trackId, i, v, ranges)} size={34}
-                accent={nTargets ? 'var(--accent2)' : undefined} />
+              <span onContextMenu={mapMenu} data-info="Right-click to map this macro to parameters">
+                <Knob spec={MACRO_SPEC} value={m.get('value') ?? 0} onChange={v => setMacroValue(trackId, i, v, ranges)} size={34}
+                  accent={nTargets ? 'var(--accent2)' : undefined} />
+              </span>
               <button className={`macro-label ${nTargets ? 'mapped' : ''}`}
-                data-info={nTargets ? `${nTargets} mapped — click to remap` : 'Click to map this macro to a parameter'}
-                onClick={e => openMenu(e, [
-                  ...(nTargets ? [{ label: <><Icon name="close" size={11} /> Clear {nTargets} mapping{nTargets > 1 ? 's' : ''}</>, fn: () => clearMacroTargets(trackId, i) } as const, 'sep' as const] : []),
-                  ...targets.map(t => ({ label: t.label, fn: () => addMacroTarget(trackId, i, t.dest, t.fxId, t.pkey) })),
-                ])}>{m.get('name') || `M${i + 1}`}</button>
+                data-info={nTargets ? `${nTargets} mapped — click to remap (• = assigned, click to toggle)` : 'Click to map this macro to parameters'}
+                onClick={mapMenu}>{m.get('name') || `M${i + 1}`}</button>
             </div>
           )
         })}

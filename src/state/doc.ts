@@ -64,7 +64,7 @@ export type ClipJSON = {
   follow?: { on: boolean; bars: number; action: number; chance: number }
 }
 export type FxJSON = { id?: string; type: string; on: boolean; params: Record<string, number>; out?: number }
-export type LfoJSON = { id?: string; on: number; shape: number; sync: number; rate: number; hz: number; depth: number; phase: number; dest: string; fxId: string; pkey: string }
+export type LfoJSON = { id?: string; on: number; shape: number; sync: number; rate: number; hz: number; depth: number; phase: number; dest: string; fxId: string; pkey: string; targets?: { dest: string; fxId: string; pkey: string }[] }
 export type MacroJSON = { name: string; value: number; targets: { dest: string; fxId: string; pkey: string }[] }
 export type MidiFxJSON = { id?: string; type: string; on: boolean; params: Record<string, number> }
 export type ReturnJSON = { id?: string; name: string; fxType: string; params: Record<string, number>; gain: number }
@@ -170,6 +170,11 @@ function yLfo(l: LfoJSON) {
   m.set('on', l.on); m.set('shape', l.shape); m.set('sync', l.sync); m.set('rate', l.rate)
   m.set('hz', l.hz); m.set('depth', l.depth); m.set('phase', l.phase)
   m.set('dest', l.dest); m.set('fxId', l.fxId); m.set('pkey', l.pkey)
+  const targets = new Y.Array<Y.Map<any>>()
+  if (l.targets?.length) targets.push(l.targets.map(tg => {
+    const tm = new Y.Map<any>(); tm.set('dest', tg.dest); tm.set('fxId', tg.fxId); tm.set('pkey', tg.pkey); return tm
+  }))
+  m.set('targets', targets)
   return m
 }
 function yMacro(mc: MacroJSON) {
@@ -503,12 +508,78 @@ export function addLfo(trackId: string): string {
     m.set('hz', 1)
     m.set('depth', 0.5)
     m.set('phase', 0)
-    m.set('dest', '')   // 'inst' | 'fx'
+    m.set('dest', '')   // legacy single-target fields (kept empty on new LFOs)
     m.set('fxId', '')
-    m.set('pkey', '')   // target param key
+    m.set('pkey', '')
+    m.set('targets', new Y.Array<Y.Map<any>>())   // multi-target mapping list
     lfoArr(t).push([m])
   })
   return id
+}
+
+// ---- LFO multi-target mapping ----
+function lfoTargetsArr(l: Y.Map<any>): Y.Array<Y.Map<any>> {
+  let a = l.get('targets') as Y.Array<Y.Map<any>> | undefined
+  if (!a) { a = new Y.Array<Y.Map<any>>(); l.set('targets', a) }   // legacy LFOs
+  return a
+}
+/** Migrate a legacy single-field mapping into the targets array, then clear it. */
+function migrateLegacyLfoTarget(l: Y.Map<any>) {
+  const dest = l.get('dest') as string, pkey = l.get('pkey') as string
+  if (!dest || !pkey) return
+  const a = lfoTargetsArr(l)
+  const fxId = (l.get('fxId') as string) || ''
+  let dup = false
+  a.forEach(tg => { if (tg.get('dest') === dest && (tg.get('fxId') || '') === fxId && tg.get('pkey') === pkey) dup = true })
+  if (!dup) {
+    const tm = new Y.Map<any>()
+    tm.set('dest', dest); tm.set('fxId', fxId); tm.set('pkey', pkey)
+    a.push([tm])
+  }
+  l.set('dest', ''); l.set('fxId', ''); l.set('pkey', '')
+}
+export function addLfoTarget(trackId: string, lfoId: string, dest: string, fxId: string, pkey: string) {
+  mutate('Map LFO', () => {
+    const t = trackById(trackId); if (!t) return
+    const i = lfoIndex(t, lfoId); if (i < 0) return
+    const l = (t.get('lfos') as Y.Array<Y.Map<any>>).get(i)
+    migrateLegacyLfoTarget(l)
+    const a = lfoTargetsArr(l)
+    let dup = false
+    a.forEach(tg => { if (tg.get('dest') === dest && (tg.get('fxId') || '') === (fxId || '') && tg.get('pkey') === pkey) dup = true })
+    if (dup) return
+    const tm = new Y.Map<any>()
+    tm.set('dest', dest); tm.set('fxId', fxId); tm.set('pkey', pkey)
+    a.push([tm])
+  })
+}
+export function removeLfoTarget(trackId: string, lfoId: string, dest: string, fxId: string, pkey: string) {
+  mutate('Unmap LFO', () => {
+    const t = trackById(trackId); if (!t) return
+    const i = lfoIndex(t, lfoId); if (i < 0) return
+    const l = (t.get('lfos') as Y.Array<Y.Map<any>>).get(i)
+    migrateLegacyLfoTarget(l)   // normalize first so legacy mappings are removable too
+    const a = lfoTargetsArr(l)
+    for (let j = a.length - 1; j >= 0; j--) {
+      const tg = a.get(j)
+      if (tg.get('dest') === dest && (tg.get('fxId') || '') === (fxId || '') && tg.get('pkey') === pkey) a.delete(j)
+    }
+  })
+}
+/** All of an LFO's target mappings (targets array + any legacy single field). */
+export function lfoTargetList(l: Y.Map<any>): { dest: string; fxId: string; pkey: string }[] {
+  const out: { dest: string; fxId: string; pkey: string }[] = []
+  const seen = new Set<string>()
+  const push = (dest: string, fxId: string, pkey: string) => {
+    if (!dest || !pkey) return
+    const k = `${dest}|${fxId}|${pkey}`
+    if (seen.has(k)) return
+    seen.add(k)
+    out.push({ dest, fxId, pkey })
+  }
+  ;(l.get('targets') as Y.Array<Y.Map<any>> | undefined)?.forEach(tg => push(tg.get('dest') || '', tg.get('fxId') || '', tg.get('pkey') || ''))
+  push((l.get('dest') as string) || '', (l.get('fxId') as string) || '', (l.get('pkey') as string) || '')
+  return out
 }
 
 export function removeLfo(trackId: string, lfoId: string) {
@@ -666,9 +737,24 @@ export function addMacroTarget(trackId: string, idx: number, dest: string, fxId:
   mutate('Map macro', () => {
     const t = trackById(trackId); if (!t) return
     const m = macrosArr(t).get(idx); if (!m) return
+    const a = m.get('targets') as Y.Array<Y.Map<any>>
+    let dup = false
+    a.forEach(x => { if (x.get('dest') === dest && (x.get('fxId') || '') === (fxId || '') && x.get('pkey') === pkey) dup = true })
+    if (dup) return
     const tg = new Y.Map<any>()
     tg.set('dest', dest); tg.set('fxId', fxId); tg.set('pkey', pkey)
-    ;(m.get('targets') as Y.Array<Y.Map<any>>).push([tg])
+    a.push([tg])
+  })
+}
+export function removeMacroTarget(trackId: string, idx: number, dest: string, fxId: string, pkey: string) {
+  mutate('Unmap macro', () => {
+    const t = trackById(trackId); if (!t) return
+    const m = macrosArr(t).get(idx); if (!m) return
+    const a = m.get('targets') as Y.Array<Y.Map<any>>
+    for (let j = a.length - 1; j >= 0; j--) {
+      const tg = a.get(j)
+      if (tg.get('dest') === dest && (tg.get('fxId') || '') === (fxId || '') && tg.get('pkey') === pkey) a.delete(j)
+    }
   })
 }
 export function clearMacroTargets(trackId: string, idx: number) {
@@ -1157,6 +1243,7 @@ export function exportProject(): ProjectJSON {
       const lfos = (t.get('lfos') as Y.Array<Y.Map<any>> | undefined)?.toArray().map(l => ({
         id: l.get('id'), on: l.get('on'), shape: l.get('shape'), sync: l.get('sync'), rate: l.get('rate'),
         hz: l.get('hz'), depth: l.get('depth'), phase: l.get('phase'), dest: l.get('dest'), fxId: l.get('fxId'), pkey: l.get('pkey'),
+        targets: lfoTargetList(l),
       })) ?? []
       const macros = (t.get('macros') as Y.Array<Y.Map<any>> | undefined)?.toArray().map(mc => ({
         name: mc.get('name'), value: mc.get('value'),

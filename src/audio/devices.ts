@@ -5,9 +5,10 @@
 // stay clean; Drive additionally oversamples its waveshaper 4x.
 
 import * as Tone from 'tone'
-import { WAVES, DELAY_FRACTIONS, DUCK_DIV_TICKS } from './schema'
+import { WAVES, DELAY_FRACTIONS, DUCK_DIV_TICKS, EQ7_BANDS, EQ7_FREQS, eq7BandType } from './schema'
 import { snapToScale } from '../theory'
 import { meta } from '../state/doc'
+import { clamp } from '../types'
 
 // Monophonic pitch detector (YIN cumulative-mean-normalized difference) used by
 // Auto-Tune. Returns the fundamental in Hz, or 0 if no clear pitch.
@@ -75,6 +76,43 @@ const liveTime = () => Tone.immediate() + 0.005
 
 // ---------------- instruments ----------------
 
+// slope index (12/24/48 dB) → biquad-cascade rolloff
+const SLOPE_ROLLOFFS = [-12, -24, -48] as const
+const slopeRolloff = (i: number) => SLOPE_ROLLOFFS[Math.max(0, Math.min(2, i | 0))]
+
+// The synths' built-in LFO (schema instLfo): a Tone.LFO summed into the filter
+// cutoff through a depth gain (±cutoff·amt). Stopped whenever amt ≈ 0, so it
+// costs nothing until the LFO Amt knob comes up.
+const INST_LFO_TYPES = ['sine', 'triangle', 'sawtooth', 'square'] as const
+function makeInstLfo(p: Record<string, number>, freqParam: Tone.Signal<'frequency'> | Tone.Param<'frequency'>, cutoff0: number) {
+  let cutoff = cutoff0
+  let amt = p.lfoAmt ?? 0
+  const lfo = new Tone.LFO({ frequency: p.lfoRate ?? 2, min: -1, max: 1 })
+  lfo.type = INST_LFO_TYPES[Math.max(0, Math.min(3, (p.lfoShape ?? 0) | 0))]
+  const depth = new Tone.Gain(cutoff * amt)
+  lfo.connect(depth)
+  depth.connect(freqParam as any)
+  let running = false
+  const gate = () => {
+    const want = amt > 0.001
+    if (want === running) return
+    running = want
+    try { want ? lfo.start() : lfo.stop() } catch { /* ok */ }
+  }
+  gate()
+  return {
+    /** handle lfoShape/lfoRate/lfoAmt + cutoff changes; true = handled */
+    set(k: string, v: number): boolean {
+      if (k === 'lfoRate') { lfo.frequency.value = v; return true }
+      if (k === 'lfoShape') { lfo.type = INST_LFO_TYPES[Math.max(0, Math.min(3, v | 0))]; return true }
+      if (k === 'lfoAmt') { amt = v; depth.gain.rampTo(cutoff * amt, 0.03); gate(); return true }
+      if (k === 'cutoff') { cutoff = v; depth.gain.rampTo(cutoff * amt, 0.03) }  // not handled — caller also moves the base
+      return false
+    },
+    dispose() { lfo.dispose(); depth.dispose() },
+  }
+}
+
 function makePoly(p: Record<string, number>): Inst {
   let wave = p.wave | 0
   let spread = p.spread ?? 18
@@ -89,20 +127,24 @@ function makePoly(p: Record<string, number>): Inst {
   } as any)
   const filt = new Tone.Filter(p.cutoff, 'lowpass')
   filt.Q.value = p.res
+  filt.rolloff = slopeRolloff(p.slope ?? 0)
   synth.connect(filt)
+  const lfo = makeInstLfo(p, filt.frequency, p.cutoff)
   return {
     out: filt,
     set: (k, v) => {
+      if (lfo.set(k, v)) return
       if (k === 'wave') { wave = v | 0; synth.set({ oscillator: oscOpts() } as any) }
       else if (k === 'spread') { spread = v; if (WAVES[wave].startsWith('fat')) synth.set({ oscillator: { spread: v } } as any) }
       else if (k === 'cutoff') filt.frequency.rampTo(v, 0.03)
       else if (k === 'res') filt.Q.value = v
+      else if (k === 'slope') filt.rolloff = slopeRolloff(v)
       else synth.set({ envelope: { [k]: v } } as any)
     },
     noteOn: (pp, vel) => synth.triggerAttack(midiHz(pp), liveTime(), vel),
     noteOff: pp => synth.triggerRelease(midiHz(pp), liveTime()),
     trigger: (pp, dur, time, vel) => synth.triggerAttackRelease(midiHz(pp), dur, time, vel),
-    dispose: () => { synth.dispose(); filt.dispose() },
+    dispose: () => { synth.dispose(); filt.dispose(); lfo.dispose() },
   }
 }
 
@@ -155,17 +197,21 @@ function makeFm(p: Record<string, number>): Inst {
 function makeMono(p: Record<string, number>): Inst {
   const synth = new Tone.MonoSynth({
     oscillator: { type: WAVES[p.wave | 0] as any },
-    filter: { Q: p.res, type: 'lowpass', rolloff: -24 },
+    filter: { Q: p.res, type: 'lowpass', rolloff: slopeRolloff(p.slope ?? 1) },
     filterEnvelope: { attack: 0.004, decay: 0.18, sustain: 0.4, release: 0.3, baseFrequency: p.cutoff, octaves: p.envAmt },
     envelope: { attack: p.attack, decay: p.decay, sustain: p.sustain, release: p.release },
     portamento: p.glide,
   } as any)
+  // built-in LFO sums into the filter cutoff on top of the filter envelope
+  const lfo = makeInstLfo(p, synth.filter.frequency, p.cutoff)
   return {
     out: synth,
     set: (k, v) => {
+      if (lfo.set(k, v)) return
       if (k === 'wave') synth.set({ oscillator: { type: WAVES[v | 0] as any } } as any)
       else if (k === 'cutoff') synth.set({ filterEnvelope: { baseFrequency: v } } as any)
       else if (k === 'res') synth.set({ filter: { Q: v } } as any)
+      else if (k === 'slope') synth.filter.rolloff = slopeRolloff(v)
       else if (k === 'envAmt') synth.set({ filterEnvelope: { octaves: v } } as any)
       else if (k === 'glide') synth.portamento = v
       else synth.set({ envelope: { [k]: v } } as any)
@@ -173,7 +219,7 @@ function makeMono(p: Record<string, number>): Inst {
     noteOn: (pp, vel) => synth.triggerAttack(midiHz(pp), liveTime(), vel),
     noteOff: () => synth.triggerRelease(liveTime()),
     trigger: (pp, dur, time, vel) => synth.triggerAttackRelease(midiHz(pp), dur, time, vel),
-    dispose: () => synth.dispose(),
+    dispose: () => { synth.dispose(); lfo.dispose() },
   }
 }
 
@@ -415,6 +461,130 @@ function makeKSampler(p: Record<string, number>, buffer?: AudioBuffer): Inst {
   }
 }
 
+/**
+ * Granular synthesis engine. Each held note runs a Tone.Clock at the grain
+ * density; every tick schedules one grain — a raw AudioBufferSourceNode playing
+ * a `size`-second slice from `pos` (± spray) of the sample, pitched by the note
+ * (± jitter), through a triangular gain window (skewed by `shape`), a random
+ * stereo pan (`spread`), and the voice's amp envelope. Clocks are context-time
+ * driven, so sequenced playback AND offline export schedule sample-accurately.
+ */
+function makeGranular(p: Record<string, number>, buffer?: AudioBuffer): Inst {
+  const out = new Tone.Gain(0.9)
+  if (!buffer) {
+    // no sample loaded (or not transferred to this peer yet) → silent but valid
+    return { out, set: () => {}, noteOn: () => {}, noteOff: () => {}, trigger: () => {}, dispose: () => out.dispose() }
+  }
+  const rawCtx = Tone.getContext().rawContext as BaseAudioContext
+  const g: Record<string, number> = { ...p }
+  const bufDur = buffer.duration
+
+  // reversed copy built once, on first reversed grain
+  let revBuf: AudioBuffer | null = null
+  const reversed = () => {
+    if (!revBuf) {
+      revBuf = rawCtx.createBuffer(buffer.numberOfChannels, buffer.length, buffer.sampleRate)
+      for (let c = 0; c < buffer.numberOfChannels; c++) {
+        const src = buffer.getChannelData(c), dst = revBuf.getChannelData(c)
+        for (let i = 0, n = buffer.length; i < n; i++) dst[i] = src[n - 1 - i]
+      }
+    }
+    return revBuf
+  }
+
+  type Voice = { p: number; env: Tone.Gain; clock: Tone.Clock; dead?: boolean }
+  const held = new Map<number, Voice>()   // live (noteOn/noteOff) voices by pitch
+  let liveCount = 0
+  const MAX_VOICES = 10
+
+  const spawnGrain = (v: Voice, time: number) => {
+    if (v.dead) return
+    const size = clamp(g.size ?? 0.12, 0.02, 0.5)
+    const rate = Math.pow(2, (v.p - 60 + (g.pitch ?? 0) + (Math.random() * 2 - 1) * (g.pjit ?? 0)) / 12)
+    let offset = (g.pos ?? 0) * bufDur + (Math.random() * 2 - 1) * (g.spray ?? 0) * bufDur * 0.5
+    const rev = Math.random() < (g.rev ?? 0)
+    const bs = rawCtx.createBufferSource()
+    bs.buffer = rev ? reversed() : buffer
+    if (rev) offset = bufDur - offset - size * rate
+    bs.playbackRate.value = rate
+    const win = rawCtx.createGain()
+    const shape = clamp(g.shape ?? 0.5, 0.03, 0.97)   // 0 = percussive, 1 = swell
+    win.gain.setValueAtTime(0, time)
+    win.gain.linearRampToValueAtTime(0.8, time + size * shape)
+    win.gain.linearRampToValueAtTime(0, time + size)
+    const pan = rawCtx.createStereoPanner()
+    pan.pan.value = (Math.random() * 2 - 1) * (g.spread ?? 0)
+    bs.connect(win); win.connect(pan)
+    Tone.connect(pan, v.env)
+    bs.onended = () => { try { bs.disconnect(); win.disconnect(); pan.disconnect() } catch { /* ok */ } }
+    try { bs.start(time, clamp(offset, 0, Math.max(0, bufDur - 0.02)), size * rate + 0.02) } catch { /* scheduling race */ }
+  }
+
+  const makeVoice = (pitch: number): Voice => {
+    const env = new Tone.Gain(0).connect(out)
+    const v: Voice = { p: pitch, env, clock: null as unknown as Tone.Clock }
+    v.clock = new Tone.Clock(t => spawnGrain(v, t), clamp(g.dens ?? 18, 2, 80))
+    liveCount++
+    return v
+  }
+  const reap = (v: Voice, afterSec: number) => {
+    setTimeout(() => {
+      v.dead = true
+      liveCount--
+      try { v.clock.dispose(); v.env.dispose() } catch { /* context may be gone (offline) */ }
+    }, Math.max(0, afterSec * 1000))
+  }
+
+  return {
+    out,
+    set: (k, v) => {
+      g[k] = v
+      if (k === 'dens') {
+        const f = clamp(v, 2, 80)
+        held.forEach(vc => { vc.clock.frequency.value = f })
+      }
+    },
+    noteOn: (pp, vel) => {
+      if (held.has(pp)) return
+      if (liveCount >= MAX_VOICES) return
+      const now = Tone.now()
+      const v = makeVoice(pp)
+      v.env.gain.setValueAtTime(0, now)
+      v.env.gain.linearRampToValueAtTime(vel, now + Math.max(0.003, g.attack ?? 0.05))
+      v.clock.start(now)
+      held.set(pp, v)
+    },
+    noteOff: pp => {
+      const v = held.get(pp)
+      if (!v) return
+      held.delete(pp)
+      const now = Tone.now()
+      const rel = Math.max(0.02, g.release ?? 0.4)
+      v.env.gain.cancelScheduledValues(now)
+      v.env.gain.setTargetAtTime(0, now, rel / 3)
+      v.clock.stop(now + rel)
+      reap(v, rel + 1.5)
+    },
+    trigger: (pp, dur, time, vel) => {
+      if (liveCount >= MAX_VOICES) return
+      const v = makeVoice(pp)
+      const atk = Math.min(Math.max(0.003, g.attack ?? 0.05), dur * 0.5)
+      const rel = Math.max(0.02, g.release ?? 0.4)
+      v.env.gain.setValueAtTime(0, time)
+      v.env.gain.linearRampToValueAtTime(vel, time + atk)
+      v.env.gain.setValueAtTime(vel, time + dur)
+      v.env.gain.linearRampToValueAtTime(0, time + dur + rel)
+      try { v.clock.start(time).stop(time + dur) } catch { /* ok */ }
+      reap(v, (time - Tone.now()) + dur + rel + 1.5)
+    },
+    dispose: () => {
+      held.forEach(v => { v.dead = true; try { v.clock.dispose(); v.env.dispose() } catch { /* ok */ } })
+      held.clear()
+      out.dispose()
+    },
+  }
+}
+
 /** Audio tracks have no synth — just a stereo passthrough bus that audio-clip
  *  players connect into, so the signal runs through the track's fx + mixer. */
 function makeAudioBus(): Inst {
@@ -431,6 +601,7 @@ export function makeInstrument(type: string, params: Record<string, number>, buf
     case 'duo': return makeDuo(params)
     case 'sampler': return makeSampler(params, buffer)
     case 'ksampler': return makeKSampler(params, buffer)
+    case 'granular': return makeGranular(params, buffer)
     case 'audiobus': return makeAudioBus()
     case 'drum': return makeDrum(params, padBuffers)
     default: return makePoly(params)
@@ -492,6 +663,119 @@ function lfoGate(node: { start: () => any; stop: () => any }) {
   }
 }
 
+// Plate reverb: a synthesized plate impulse response through a raw Convolver.
+// A real plate has NO discrete early reflections — echo density is maximal
+// almost immediately — so the IR is decorrelated stereo noise with a ~4ms onset
+// ramp, an exponential decay, and a first-difference high-tilt for the metallic
+// sheen. Pre-delay sits before the convolver, a damping lowpass after it.
+// Crucially there is no nested offline render (unlike Tone.Reverb), so the same
+// code path works inside Tone.Offline exports.
+class PlateVerb extends Tone.ToneAudioNode {
+  readonly name = 'PlateVerb'
+  readonly input: Tone.Gain
+  readonly output: Tone.Gain
+  private pre: DelayNode
+  private conv: ConvolverNode
+  private dampF: BiquadFilterNode
+  private wet: Tone.Gain
+  private dry: Tone.Gain
+  private regen: ReturnType<typeof setTimeout> | null = null
+  constructor(p: Record<string, number>) {
+    super()
+    const raw = this.context.rawContext as BaseAudioContext
+    this.input = new Tone.Gain(1)
+    this.output = new Tone.Gain(1)
+    this.pre = raw.createDelay(0.5)
+    this.pre.delayTime.value = p.predelay ?? 0.02
+    this.conv = raw.createConvolver()
+    this.conv.normalize = true
+    this.dampF = raw.createBiquadFilter()
+    this.dampF.type = 'lowpass'
+    this.dampF.frequency.value = p.damp ?? 6000
+    const mix = p.mix ?? 0.3
+    this.wet = new Tone.Gain(mix)
+    this.dry = new Tone.Gain(1 - mix)
+    this.input.connect(this.dry); this.dry.connect(this.output)
+    Tone.connect(this.input, this.pre)
+    this.pre.connect(this.conv); this.conv.connect(this.dampF)
+    Tone.connect(this.dampF, this.wet)
+    this.wet.connect(this.output)
+    this.makeIr(p.decay ?? 1.8)
+  }
+  makeIr(decay: number) {
+    const raw = this.context.rawContext as BaseAudioContext
+    const sr = raw.sampleRate
+    const len = Math.max(64, Math.floor(Math.max(0.15, decay) * sr))
+    const ir = raw.createBuffer(2, len, sr)
+    for (let c = 0; c < 2; c++) {
+      const d = ir.getChannelData(c)
+      for (let i = 0; i < len; i++) {
+        const onset = Math.min(1, (i / sr) / 0.004)
+        d[i] = (Math.random() * 2 - 1) * onset * Math.exp((-6.9 * i) / len)   // −60dB by the tail
+      }
+      // metallic tilt: blend in the first difference (a gentle high emphasis)
+      for (let i = len - 1; i > 0; i--) d[i] = d[i] * 0.7 + (d[i] - d[i - 1]) * 0.3
+    }
+    this.conv.buffer = ir
+  }
+  setParam(k: string, v: number) {
+    if (k === 'decay') {
+      if (this.regen) clearTimeout(this.regen)
+      this.regen = setTimeout(() => { this.regen = null; this.makeIr(v) }, 150)
+    } else if (k === 'predelay') this.pre.delayTime.setTargetAtTime(v, this.now(), 0.02)
+    else if (k === 'damp') this.dampF.frequency.setTargetAtTime(v, this.now(), 0.02)
+    else if (k === 'mix') { this.wet.gain.rampTo(v, 0.03); this.dry.gain.rampTo(1 - v, 0.03) }
+  }
+  dispose() {
+    super.dispose()
+    if (this.regen) clearTimeout(this.regen)
+    this.input.dispose(); this.output.dispose(); this.wet.dispose(); this.dry.dispose()
+    try { this.pre.disconnect(); this.conv.disconnect(); this.dampF.disconnect() } catch { /* ok */ }
+    return this
+  }
+}
+
+// 7-band parametric EQ: low shelf → 5 peaking → high shelf, as a series of raw
+// biquads inside one in=out node. Params are flat b{i}_(freq|gain|q) keys.
+class Eq7 extends Tone.ToneAudioNode {
+  readonly name = 'Eq7'
+  readonly input: Tone.Gain
+  readonly output: Tone.Gain
+  readonly bands: BiquadFilterNode[] = []
+  constructor(p: Record<string, number>) {
+    super()
+    const raw = this.context.rawContext as BaseAudioContext
+    this.input = new Tone.Gain(1)
+    this.output = new Tone.Gain(1)
+    for (let i = 0; i < EQ7_BANDS; i++) {
+      const bq = raw.createBiquadFilter()
+      bq.type = eq7BandType(i)
+      bq.frequency.value = p[`b${i}_freq`] ?? EQ7_FREQS[i]
+      bq.gain.value = p[`b${i}_gain`] ?? 0
+      bq.Q.value = p[`b${i}_q`] ?? 1
+      if (i === 0) Tone.connect(this.input, bq)
+      else this.bands[i - 1].connect(bq)
+      this.bands.push(bq)
+    }
+    Tone.connect(this.bands[EQ7_BANDS - 1], this.output)
+  }
+  setParam(k: string, v: number) {
+    const m = /^b(\d)_(freq|gain|q)$/.exec(k)
+    if (!m) return
+    const bq = this.bands[+m[1]]
+    if (!bq) return
+    if (m[2] === 'freq') bq.frequency.setTargetAtTime(v, this.now(), 0.02)
+    else if (m[2] === 'gain') bq.gain.setTargetAtTime(v, this.now(), 0.02)
+    else bq.Q.setTargetAtTime(Math.max(0.05, v), this.now(), 0.02)
+  }
+  dispose() {
+    super.dispose()
+    this.input.dispose(); this.output.dispose()
+    this.bands.forEach(b => { try { b.disconnect() } catch { /* ok */ } })
+    return this
+  }
+}
+
 export function makeEffect(type: string, p: Record<string, number>): Fx {
   switch (type) {
     case 'eq': {
@@ -547,6 +831,28 @@ export function makeEffect(type: string, p: Record<string, number>): Fx {
           } else node.wet.value = v
         },
         dispose: () => node.dispose(),
+      }
+    }
+    case 'plate': {
+      const node = new PlateVerb(p)
+      return {
+        node,
+        set: (k, v) => node.setParam(k, v),
+        dispose: () => node.dispose(),
+      }
+    }
+    case 'eq7': {
+      const node = new Eq7(p)
+      // pre-EQ tap for the card's real-time analyser (engine wires prev → detect)
+      const ctx = Tone.getContext().rawContext as BaseAudioContext
+      const detect = ctx.createAnalyser()
+      detect.fftSize = 2048
+      detect.smoothingTimeConstant = 0.82
+      return {
+        node,
+        detect,
+        set: (k, v) => node.setParam(k, v),
+        dispose: () => { node.dispose(); try { detect.disconnect() } catch { /* ok */ } },
       }
     }
     case 'chorus': {

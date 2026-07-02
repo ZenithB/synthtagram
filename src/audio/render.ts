@@ -129,7 +129,7 @@ function envValueAt(pts: { t: number; v: number }[], pos: number, loop: number):
 
 /** Build one track's full signal chain into the current (offline) context. */
 function buildOffTrack(t: TrackJSON, master: Tone.Volume, returnInputs: Tone.ToneAudioNode[], toMaster: boolean, legacyAB = true): OffTrack {
-  const buf = (t.inst.type === 'sampler' || t.inst.type === 'ksampler') ? getSampleBuffer(t.inst.sampleId || '') : undefined
+  const buf = (t.inst.type === 'sampler' || t.inst.type === 'ksampler' || t.inst.type === 'granular') ? getSampleBuffer(t.inst.sampleId || '') : undefined
   let padBuffers: Map<number, AudioBuffer> | undefined
   if (t.inst.type === 'drum' && t.inst.padSamples) {
     padBuffers = new Map()
@@ -219,10 +219,16 @@ function applyMod(ot: OffTrack, posTicks: number, audioTime: number, bpm: number
       lfo.sync
         ? posTicks / (LFO_DIV_TICKS[lfo.rate | 0] || 384) + (lfo.phase ?? 0)
         : audioTime * (lfo.hz ?? 1) + (lfo.phase ?? 0))
-    if (!lfo.on || !lfo.pkey || !lfo.dest) return
-    const k = `${lfo.dest}|${lfo.fxId || ''}|${lfo.pkey}`
-    lfoOff.set(k, (lfoOff.get(k) ?? 0) + raw * (lfo.depth ?? 0.5))
-    controlled.set(k, { dest: lfo.dest, fxId: lfo.fxId || '', pkey: lfo.pkey })
+    if (!lfo.on) return
+    // multi-target list; fall back to the legacy single-field mapping
+    const tgs = lfo.targets?.length
+      ? lfo.targets
+      : (lfo.dest && lfo.pkey ? [{ dest: lfo.dest, fxId: lfo.fxId || '', pkey: lfo.pkey }] : [])
+    for (const tg of tgs) {
+      const k = `${tg.dest}|${tg.fxId || ''}|${tg.pkey}`
+      lfoOff.set(k, (lfoOff.get(k) ?? 0) + raw * (lfo.depth ?? 0.5))
+      controlled.set(k, { dest: tg.dest, fxId: tg.fxId || '', pkey: tg.pkey })
+    }
   })
 
   for (const [k, tg] of controlled) {

@@ -53,9 +53,12 @@ type BuiltReturn = { id: string; fx: Fx; channel: Tone.Volume }
 
 // Plain-JS snapshot of an LFO's config — read every frame by the modulation
 // loop, so we deserialize the Y.Map once per change instead of per frame.
+// `targets` is the (multi-)mapping list; legacy single dest/fxId/pkey fields
+// from older docs are folded into it at read time.
+type LfoTarget = { dest: string; fxId: string; pkey: string }
 type LfoCfg = {
   id: string; on: boolean; shape: number; sync: boolean; rate: number
-  hz: number; depth: number; phase: number; dest: string; fxId: string; pkey: string
+  hz: number; depth: number; phase: number; targets: LfoTarget[]
 }
 type EnvPts = { t: number; v: number }[]
 
@@ -124,11 +127,26 @@ class Engine {
     let cfgs = this.lfoCfgCache.get(tid)
     if (!cfgs) {
       const list: LfoCfg[] = []
-      ;(t.get('lfos') as Y.Array<Y.Map<any>> | undefined)?.forEach(l => list.push({
-        id: l.get('id'), on: !!l.get('on'), shape: l.get('shape') | 0, sync: !!l.get('sync'),
-        rate: l.get('rate') | 0, hz: l.get('hz') ?? 1, depth: l.get('depth') ?? 0.5, phase: l.get('phase') ?? 0,
-        dest: (l.get('dest') as string) || '', fxId: (l.get('fxId') as string) || '', pkey: (l.get('pkey') as string) || '',
-      }))
+      ;(t.get('lfos') as Y.Array<Y.Map<any>> | undefined)?.forEach(l => {
+        const targets: LfoTarget[] = []
+        const seen = new Set<string>()
+        const push = (dest: string, fxId: string, pkey: string) => {
+          if (!dest || !pkey) return
+          const k = `${dest}|${fxId}|${pkey}`
+          if (seen.has(k)) return
+          seen.add(k)
+          targets.push({ dest, fxId, pkey })
+        }
+        ;(l.get('targets') as Y.Array<Y.Map<any>> | undefined)?.forEach(tg =>
+          push(tg.get('dest') || '', tg.get('fxId') || '', tg.get('pkey') || ''))
+        // legacy single-field mapping from older docs
+        push((l.get('dest') as string) || '', (l.get('fxId') as string) || '', (l.get('pkey') as string) || '')
+        list.push({
+          id: l.get('id'), on: !!l.get('on'), shape: l.get('shape') | 0, sync: !!l.get('sync'),
+          rate: l.get('rate') | 0, hz: l.get('hz') ?? 1, depth: l.get('depth') ?? 0.5, phase: l.get('phase') ?? 0,
+          targets,
+        })
+      })
       cfgs = list
       this.lfoCfgCache.set(tid, cfgs)
     }
@@ -450,7 +468,7 @@ class Engine {
         const it = t.get('inst') as Y.Map<any> | undefined
         if (!it) return
         const ity = it.get('type')
-        if ((ity === 'sampler' || ity === 'ksampler') && it.get('sampleId') === id) {
+        if ((ity === 'sampler' || ity === 'ksampler' || ity === 'granular') && it.get('sampleId') === id) {
           this.scheduleRebuildTrack(t.get('id'))
         } else if (it.get('type') === 'drum') {
           const ps = it.get('padSamples') as Y.Map<string> | undefined
@@ -661,10 +679,12 @@ class Engine {
           raw = lfoShapeValue(lfo.shape, ph + lfo.phase)
         }
         this.lfoVals.set(lfo.id, raw)
-        if (!lfo.on || !lfo.pkey || !lfo.dest) continue
-        const k = `${lfo.dest}|${lfo.fxId}|${lfo.pkey}`
-        lfoOff.set(k, (lfoOff.get(k) ?? 0) + raw * lfo.depth)
-        controlled.set(k, { dest: lfo.dest, fxId: lfo.fxId, pkey: lfo.pkey })
+        if (!lfo.on || !lfo.targets.length) continue
+        for (const tg of lfo.targets) {
+          const k = `${tg.dest}|${tg.fxId}|${tg.pkey}`
+          lfoOff.set(k, (lfoOff.get(k) ?? 0) + raw * lfo.depth)
+          controlled.set(k, tg)
+        }
       }
 
       // ---- combine automation base + LFO offset, apply once per param ----
@@ -805,7 +825,7 @@ class Engine {
     const tid = t.get('id') as string
     const it = t.get('inst') as Y.Map<any>
     const instType = it.get('type')
-    const buf = (instType === 'sampler' || instType === 'ksampler') ? getSampleBuffer(it.get('sampleId') || '') : undefined
+    const buf = (instType === 'sampler' || instType === 'ksampler' || instType === 'granular') ? getSampleBuffer(it.get('sampleId') || '') : undefined
     // drum: resolve any per-pad sample overrides to buffers (missing ones stay synth)
     let padBuffers: Map<number, AudioBuffer> | undefined
     if (it.get('type') === 'drum') {
@@ -1910,6 +1930,11 @@ class Engine {
     return typeof v === 'number' ? v : Math.max(...(v as number[]))
   }
 
+  /** An effect's input-tap AnalyserNode (Auto-Tune detector, EQ Seven RTA). */
+  deviceAnalyser(trackId: string, fxId: string): AnalyserNode | null {
+    return this.findBuiltFx(trackId, fxId)?.fx.detect ?? null
+  }
+
   /** Live gain reduction (dB, ≤0) for a compressor-type fx — drives the GR meter. */
   deviceReductionDb(trackId: string, fxId: string): number {
     return this.findBuiltFx(trackId, fxId)?.fx.gr?.() ?? 0
@@ -1988,7 +2013,7 @@ class Engine {
     const list = this.allTracks()
     let sendMod = false
     for (const t of list) {
-      if (this.lfoCfgsOf(t.get('id') as string, t).some(l => l.on && l.dest === 'send')) { sendMod = true; break }
+      if (this.lfoCfgsOf(t.get('id') as string, t).some(l => l.on && l.targets.some(tg => tg.dest === 'send'))) { sendMod = true; break }
     }
     if (!sendMod && this.mode === 'session') {
       for (const rec of this.built.values()) {
