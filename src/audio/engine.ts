@@ -1440,7 +1440,7 @@ class Engine {
     if (rec.part) { try { rec.part.stop(); rec.part.dispose() } catch { /* ok */ } rec.part = null }
     rec.unobserve?.(); rec.unobserve = null
     const oldPlayer = rec.player
-    if (!started) { this.transport.ticks = 0 as any; this.transport.start('+0.05') }
+    if (!started) { this.transport.ticks = 0 as any; this.transport.start('+0.05'); this.resumeArmed(trackId) }
     const player = this.makePlayer(rec, clipMap)
     try { player.sync().start(atT) } catch { try { player.start() } catch { /* ok */ } }
     if (oldPlayer) { try { oldPlayer.stop(atT) } catch { /* ok */ } setTimeout(() => { try { oldPlayer.unsync(); oldPlayer.dispose() } catch { /* ok */ } }, 900) }
@@ -1564,6 +1564,8 @@ class Engine {
     if (this.transport.state !== 'started') {
       this.transport.ticks = 0 as any
       this.transport.start('+0.05')
+      // if we're resuming from a session pause, bring the other armed clips back
+      this.resumeArmed(trackId)
       this.startPartNow(trackId, key)
       this.armFollow(trackId, sceneId, 0)
       this.emit()
@@ -1600,8 +1602,11 @@ class Engine {
 
   async stopClip(trackId: string) {
     const rec = this.built.get(trackId)
-    if (!rec || (!rec.part && !rec.player && !rec.queuedKey && !rec.queuedPart)) return
+    // `partKey` is included so a clip armed during a session pause (no live part
+    // yet) can still be un-armed by a stop.
+    if (!rec || (!rec.part && !rec.player && !rec.queuedKey && !rec.queuedPart && !rec.partKey)) return
     if (this.transport.state !== 'started') {
+      this.sessionArmed = this.sessionArmed.filter(a => a.trackId !== trackId)
       this.stopTrackNow(rec)
       this.emit()
       return
@@ -1679,6 +1684,7 @@ class Engine {
   async playArrangement(fromTicks?: number) {
     await this.ensureStarted()
     const t = this.transport
+    this.sessionArmed = []   // leaving session for the timeline drops any armed clips
     // stop session clips immediately — the timeline takes over
     this.built.forEach(rec => this.stopTrackNow(rec))
     if (t.state === 'started') t.stop()
@@ -1702,17 +1708,86 @@ class Engine {
 
   async togglePlay() {
     await this.ensureStarted()
-    if (this.transport.state === 'started') this.stopAll()
-    else if (ui.view === 'arr') this.playArrangement()
-    else {
-      this.ensureSessionMode()
-      this.transport.ticks = 0 as any
-      this.transport.start('+0.05')
-      this.emit()
+    if (this.transport.state === 'started') {
+      // In the Session view, stopping is a PAUSE: the transport resets to the
+      // top but each launched clip stays "armed" (its slot stays lit), so a
+      // later Play restarts global playback and every armed clip is heard again
+      // from bar 1. The arrangement timeline has no such notion — it hard-stops.
+      if (this.mode === 'session') this.pauseSession()
+      else this.stopAll()
+      return
     }
+    if (ui.view === 'arr') { this.playArrangement(); return }
+    this.ensureSessionMode()
+    this.transport.ticks = 0 as any
+    this.transport.start('+0.05')
+    this.resumeArmed()
+    this.emit()
+  }
+
+  // Clips that were playing when the user hit Stop in the Session view. Kept so
+  // the next Play resumes them (and so their slots stay visually active).
+  private sessionArmed: { trackId: string; key: string }[] = []
+
+  /** Session "stop" = pause: silence + rewind, but remember & re-mark active clips. */
+  private pauseSession() {
+    // A queued STOP means the user asked that track to stop, so don't re-arm it.
+    this.sessionArmed = []
+    this.built.forEach(rec => {
+      if (rec.partKey && rec.partKey !== STOP && rec.queuedKey !== STOP) {
+        this.sessionArmed.push({ trackId: rec.id, key: rec.partKey })
+      }
+    })
+    this.built.forEach(rec => this.stopTrackNow(rec))
+    const t = this.transport
+    t.stop()
+    t.loop = false
+    t.ticks = 0 as any
+    this.pendingRec.clear()
+    // re-mark armed clips active (partKey set, no live part) so slots stay lit
+    for (const a of this.sessionArmed) {
+      const rec = this.built.get(a.trackId)
+      if (!rec) continue
+      rec.partKey = a.key
+      rec.partStartTicks = 0
+      rec.partLoopTicks = (clips.get(a.key) as Y.Map<any> | undefined)?.get('len') ?? BAR
+    }
+    this.emit()
+  }
+
+  /** Re-launch every clip armed by a session pause, anchored to tick 0. */
+  private resumeArmed(exceptTrackId?: string) {
+    if (!this.sessionArmed.length) return
+    const armed = this.sessionArmed.filter(a => a.trackId !== exceptTrackId)
+    this.sessionArmed = []
+    for (const a of armed) this.resumeClipAtZero(a.trackId, a.key)
+  }
+
+  /** Start a single armed clip's part/player at transport tick 0 (transport must
+   *  already be running). Used only by the session pause/resume path. */
+  private resumeClipAtZero(trackId: string, key: string) {
+    const rec = this.built.get(trackId)
+    const clipMap = clips.get(key) as Y.Map<any> | undefined
+    if (!rec || !clipMap) return
+    const sceneId = key.split('|')[1]
+    this.stopTrackNow(rec)   // clear the paused marker + any stale nodes
+    this.clipEnvCache.delete(clipMap)
+    if (isAudioClip(clipMap)) {
+      const player = this.makePlayer(rec, clipMap)
+      try { player.sync().start('0i') } catch { try { player.start() } catch { /* ok */ } }
+      rec.player = player
+      rec.partKey = key
+      rec.partStartTicks = 0
+      rec.partLoopTicks = clipMap.get('len') ?? BAR
+      this.observeAudioClip(rec, key, clipMap)
+    } else {
+      this.startPartNow(trackId, key, 0)
+    }
+    this.armFollow(trackId, sceneId, 0)
   }
 
   stopAll() {
+    this.sessionArmed = []
     this.built.forEach(rec => this.stopTrackNow(rec))
     this.clearArrParts()
     const t = this.transport
